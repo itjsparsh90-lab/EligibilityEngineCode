@@ -31,7 +31,7 @@ namespace JsonWorkflowEngineRule
         private const string ENT_CaseIncome = "mcg_caseincome";
         private const string ENT_UploadDocument = "mcg_documentextension";
 
-        // NEW: Case Address table for validation #3
+        // ✅ NEW: Case Address table for validation #3
         private const string ENT_CaseAddress = "mcg_caseaddress";
 
         #endregion
@@ -44,7 +44,7 @@ namespace JsonWorkflowEngineRule
         private const string FLD_BLI_Benefit = "mcg_servicebenefitnames";
         private const string FLD_BLI_RecipientContact = "mcg_recipientcontact";
 
-        // Care validations (no change)
+        // ✅ Care validations (no change)
         private const string FLD_BLI_CareServiceType = "mcg_careservicetype";
         private const string FLD_BLI_CareServiceLevel = "mcg_careservicelevel";
 
@@ -68,17 +68,17 @@ namespace JsonWorkflowEngineRule
         private const string FLD_CI_ApplicableIncome = "mcg_applicableincome";
         private const string FLD_CI_Amount = "mcg_amount";
 
-        // Document Extension (category/subcategory )
+        // Document Extension (category/subcategory are TEXT fields)
         private const string FLD_DOC_Case = "mcg_case";
         private const string FLD_DOC_Contact = "mcg_contact";
         private const string FLD_DOC_Category = "mcg_uploaddocumentcategory";
         private const string FLD_DOC_SubCategory = "mcg_uploaddocumentsubcategory";
 
-        // Beneficiary field (text) to validate citizenship
+        // ✅ Beneficiary field (text) to validate citizenship
         private const string FLD_CONTACT_ChildCitizenship = "mcg_childcitizenship";
         private const string REQUIRED_CITIZENSHIP = "Montgomery";
 
-        //  Case Address fields
+        // ✅ Case Address fields
         private const string FLD_CA_Case = "mcg_case";
         private const string FLD_CA_EndDate = "mcg_enddate";
 
@@ -123,14 +123,14 @@ namespace JsonWorkflowEngineRule
                 if (benefitRef == null)
                     validationFailures.Add("Financial Benefit (mcg_servicebenefitnames) is missing on Benefit Line Item.");
 
-                // Care validations (no change)
+                // ✅ Care validations (no change)
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceType) || bli[FLD_BLI_CareServiceType] == null)
                     validationFailures.Add("Care/Service Type (mcg_careservicetype) is missing for the selected child.");
 
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceLevel) || bli[FLD_BLI_CareServiceLevel] == null)
                     validationFailures.Add("Care/Service Level (mcg_careservicelevel) is missing for the selected child.");
 
-                //  Verified logic (your new requirement #5)
+                // ✅ Verified logic (your new requirement #5)
                 bool? verified = null;
                 if (bli.Attributes.Contains(FLD_BLI_Verified) && bli[FLD_BLI_Verified] != null)
                 {
@@ -199,11 +199,10 @@ namespace JsonWorkflowEngineRule
                     if (household.Count == 0)
                         validationFailures.Add("No active Case Household members found (Date Exited is blank).");
 
-                    // ✅ Validation #2: Applicable income only (new message)
-                    var hasApplicableIncomeYes = HasApplicableIncomeYes(service, tracing, caseRef.Id);
-                    if (!hasApplicableIncomeYes)
+                    // ✅ Validation #2: Applicable income only (new message
+                    if (!HasAnyCaseIncome(service, tracing, caseRef.Id))
                     {
-                        validationFailures.Add("Case Income – No applicable income found (no case income row with Applicable Income = Yes).");
+                        validationFailures.Add("Case Income – No case income record found.");
                     }
 
                     // ✅ Validation #3: Home Address on Case (mcg_caseaddress) with Null/Future End Date
@@ -291,21 +290,21 @@ namespace JsonWorkflowEngineRule
         #region ====== NEW VALIDATIONS ======
 
         // ✅ #2 Applicable income = YES
-        private static bool HasApplicableIncomeYes(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        private static bool HasAnyCaseIncome(IOrganizationService svc, ITracingService tracing, Guid caseId)
         {
             var qe = new QueryExpression(ENT_CaseIncome)
             {
-                ColumnSet = new ColumnSet(FLD_CI_ApplicableIncome),
+                ColumnSet = new ColumnSet("mcg_caseincomeid"),
                 TopCount = 1
             };
 
             qe.Criteria.AddCondition(FLD_CI_Case, ConditionOperator.Equal, caseId);
-            qe.Criteria.AddCondition(FLD_CI_ApplicableIncome, ConditionOperator.Equal, true);
 
             var found = svc.RetrieveMultiple(qe).Entities.Any();
-            tracing.Trace($"HasApplicableIncomeYes(caseId={caseId}) = {found}");
+            tracing.Trace($"HasAnyCaseIncome(caseId={caseId}) = {found}");
             return found;
         }
+
 
         // ✅ #3 Case address: must exist and have at least one row with EndDate null or future/today
         private static string ValidateCaseHomeAddress(IOrganizationService svc, ITracingService tracing, Guid caseId)
