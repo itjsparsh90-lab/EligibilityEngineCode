@@ -31,7 +31,7 @@ namespace JsonWorkflowEngineRule
         private const string ENT_CaseIncome = "mcg_caseincome";
         private const string ENT_UploadDocument = "mcg_documentextension";
 
-        // ✅ NEW: Case Address table for validation #3
+        // NEW: Case Address table for validation #3
         private const string ENT_CaseAddress = "mcg_caseaddress";
 
         #endregion
@@ -44,7 +44,7 @@ namespace JsonWorkflowEngineRule
         private const string FLD_BLI_Benefit = "mcg_servicebenefitnames";
         private const string FLD_BLI_RecipientContact = "mcg_recipientcontact";
 
-        // ✅ Care validations (no change)
+        // Care validations (no change)
         private const string FLD_BLI_CareServiceType = "mcg_careservicetype";
         private const string FLD_BLI_CareServiceLevel = "mcg_careservicelevel";
 
@@ -68,17 +68,17 @@ namespace JsonWorkflowEngineRule
         private const string FLD_CI_ApplicableIncome = "mcg_applicableincome";
         private const string FLD_CI_Amount = "mcg_amount";
 
-        // Document Extension (category/subcategory are TEXT fields)
+        // Document Extension (category/subcategory )
         private const string FLD_DOC_Case = "mcg_case";
         private const string FLD_DOC_Contact = "mcg_contact";
         private const string FLD_DOC_Category = "mcg_uploaddocumentcategory";
         private const string FLD_DOC_SubCategory = "mcg_uploaddocumentsubcategory";
 
-        // ✅ Beneficiary field (text) to validate citizenship
+        // Beneficiary field (text) to validate citizenship
         private const string FLD_CONTACT_ChildCitizenship = "mcg_childcitizenship";
         private const string REQUIRED_CITIZENSHIP = "Montgomery";
 
-        // ✅ Case Address fields
+        //  Case Address fields
         private const string FLD_CA_Case = "mcg_case";
         private const string FLD_CA_EndDate = "mcg_enddate";
 
@@ -123,14 +123,14 @@ namespace JsonWorkflowEngineRule
                 if (benefitRef == null)
                     validationFailures.Add("Financial Benefit (mcg_servicebenefitnames) is missing on Benefit Line Item.");
 
-                // ✅ Care validations (no change)
+                // Care validations (no change)
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceType) || bli[FLD_BLI_CareServiceType] == null)
                     validationFailures.Add("Care/Service Type (mcg_careservicetype) is missing for the selected child.");
 
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceLevel) || bli[FLD_BLI_CareServiceLevel] == null)
                     validationFailures.Add("Care/Service Level (mcg_careservicelevel) is missing for the selected child.");
 
-                // ✅ Verified logic (your new requirement #5)
+                //  Verified logic (your new requirement #5)
                 bool? verified = null;
                 if (bli.Attributes.Contains(FLD_BLI_Verified) && bli[FLD_BLI_Verified] != null)
                 {
