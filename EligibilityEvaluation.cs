@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Runtime.Serialization;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Newtonsoft.Json;
@@ -13,7 +12,7 @@ namespace JsonWorkflowEngineRule
     {
         #region ====== ACTION PARAMS ======
 
-        private const string IN_CaseBenefitLineItemId = "CaseBenifitLineItemId"; 
+        private const string IN_CaseBenefitLineItemId = "CaseBenifitLineItemId";
         private const string IN_EvaluationContextJson = "EvaluationContextJson";
 
         private const string OUT_IsEligible = "iseligible";
@@ -32,58 +31,56 @@ namespace JsonWorkflowEngineRule
         private const string ENT_CaseIncome = "mcg_caseincome";
         private const string ENT_UploadDocument = "mcg_documentextension";
 
-        private const string ENT_Address = "mcg_address";
+        // ✅ NEW: Case Address table for validation #3
+        private const string ENT_CaseAddress = "mcg_caseaddress";
 
         #endregion
 
         #region ====== FIELDS ======
 
         // BLI fields
-        private const string FLD_BLI_RegardingCase = "mcg_regardingincident";  
+        private const string FLD_BLI_RegardingCase = "mcg_regardingincident";
         private const string FLD_BLI_Verified = "mcg_verified";
-        private const string FLD_BLI_Benefit = "mcg_servicebenefitnames";      
+        private const string FLD_BLI_Benefit = "mcg_servicebenefitnames";
         private const string FLD_BLI_RecipientContact = "mcg_recipientcontact";
 
-        // ✅ Care validations (you confirmed)
+        // ✅ Care validations (no change)
         private const string FLD_BLI_CareServiceType = "mcg_careservicetype";
         private const string FLD_BLI_CareServiceLevel = "mcg_careservicelevel";
 
         // Service Scheme fields
-        private const string FLD_SCHEME_BenefitName = "mcg_benefitname";       
+        private const string FLD_SCHEME_BenefitName = "mcg_benefitname";
         private const string FLD_SCHEME_RuleJson = "mcg_ruledefinitionjson";
 
         // Case fields
         private const string FLD_CASE_PrimaryContact = "mcg_contact";
-        private const string FLD_CASE_YearlyHouseholdIncome = "mcg_yearlyhouseholdincome";
 
-        // Contact fields
-        private const string FLD_CONTACT_MaritalStatus = "familystatuscode";
-        private const string FLD_CONTACT_PrimaryAddress = "mcg_primaryaddress";
-
-        // Address fields
-        private const string FLD_ADDR_CountyText = "mcg_countytext";
-        private const string REQUIRED_COUNTY = "Montgomery";
-
-        // Household fields 
-        private const string FLD_CH_Case = "mcg_case"; 
+        // Household fields
+        private const string FLD_CH_Case = "mcg_case";
         private const string FLD_CH_Contact = "mcg_contact";
         private const string FLD_CH_DateEntered = "mcg_dateentered";
         private const string FLD_CH_DateExited = "mcg_dateexited";
         private const string FLD_CH_Primary = "mcg_primary";
         private const string FLD_CH_StateCode = "statecode";
 
-        // Case Income fields 
-        private const string FLD_CI_Case = "mcg_case"; 
-        private const string FLD_CI_ApplicableIncome = "mcg_applicableincome"; 
-        private const string FLD_CI_Amount = "mcg_amount"; 
-        private const string FLD_CASE_YearlyEligibleIncome = "mcg_yearlyeligibleincome"; 
+        // Case Income fields
+        private const string FLD_CI_Case = "mcg_case";
+        private const string FLD_CI_ApplicableIncome = "mcg_applicableincome";
+        private const string FLD_CI_Amount = "mcg_amount";
 
-
-        // Document Extension 
-        private const string FLD_DOC_Case = "mcg_case"; 
-        private const string FLD_DOC_Contact = "mcg_contact"; 
+        // Document Extension (category/subcategory are TEXT fields)
+        private const string FLD_DOC_Case = "mcg_case";
+        private const string FLD_DOC_Contact = "mcg_contact";
         private const string FLD_DOC_Category = "mcg_uploaddocumentcategory";
         private const string FLD_DOC_SubCategory = "mcg_uploaddocumentsubcategory";
+
+        // ✅ Beneficiary field (text) to validate citizenship
+        private const string FLD_CONTACT_ChildCitizenship = "mcg_childcitizenship";
+        private const string REQUIRED_CITIZENSHIP = "Montgomery";
+
+        // ✅ Case Address fields
+        private const string FLD_CA_Case = "mcg_case";
+        private const string FLD_CA_EndDate = "mcg_enddate";
 
         #endregion
 
@@ -98,7 +95,6 @@ namespace JsonWorkflowEngineRule
 
             try
             {
-               
                 var bliId = GetGuidFromInput(context, IN_CaseBenefitLineItemId);
 
                 var evalContextJson = context.InputParameters.Contains(IN_EvaluationContextJson)
@@ -108,7 +104,6 @@ namespace JsonWorkflowEngineRule
                 tracing.Trace($"Input BLI Id: {bliId}");
                 tracing.Trace($"EvaluationContextJson present: {!string.IsNullOrWhiteSpace(evalContextJson)}");
 
-                
                 var bli = service.Retrieve(ENT_BenefitLineItem, bliId, new ColumnSet(
                     FLD_BLI_RegardingCase,
                     FLD_BLI_Verified,
@@ -128,34 +123,56 @@ namespace JsonWorkflowEngineRule
                 if (benefitRef == null)
                     validationFailures.Add("Financial Benefit (mcg_servicebenefitnames) is missing on Benefit Line Item.");
 
-
+                // ✅ Care validations (no change)
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceType) || bli[FLD_BLI_CareServiceType] == null)
                     validationFailures.Add("Care/Service Type (mcg_careservicetype) is missing for the selected child.");
 
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceLevel) || bli[FLD_BLI_CareServiceLevel] == null)
                     validationFailures.Add("Care/Service Level (mcg_careservicelevel) is missing for the selected child.");
 
-                
-                if (!bli.Attributes.Contains(FLD_BLI_Verified) || bli[FLD_BLI_Verified] == null)
+                // ✅ Verified logic (your new requirement #5)
+                bool? verified = null;
+                if (bli.Attributes.Contains(FLD_BLI_Verified) && bli[FLD_BLI_Verified] != null)
+                {
+                    verified = bli.GetAttributeValue<bool?>(FLD_BLI_Verified);
+                }
+                else
+                {
                     validationFailures.Add("Verified (mcg_verified) is not set for the selected child.");
+                }
 
-                // -------- Load Case + Primary Contact (if case exists) --------
+                if (verified.HasValue)
+                {
+                    if (verified.Value)
+                    {
+                        tracing.Trace("Verified = YES => Documented.");
+                    }
+                    else
+                    {
+                        validationFailures.Add("Verified is No, so the user is Undocumented.");
+                    }
+                }
+
+                // Recipient / Beneficiary contact
+                var recipientRef = bli.GetAttributeValue<EntityReference>(FLD_BLI_RecipientContact);
+                if (recipientRef == null)
+                {
+                    validationFailures.Add("Beneficiary (Recipient Contact) is missing on Benefit Line Item.");
+                }
+
+                // -------- Load Case (if exists) --------
                 Entity inc = null;
                 EntityReference primaryContactRef = null;
 
                 if (caseRef != null)
                 {
-                    inc = service.Retrieve(ENT_Case, caseRef.Id, new ColumnSet(
-                        FLD_CASE_PrimaryContact,
-                        FLD_CASE_YearlyHouseholdIncome
-                    ));
-
+                    inc = service.Retrieve(ENT_Case, caseRef.Id, new ColumnSet(FLD_CASE_PrimaryContact));
                     primaryContactRef = inc.GetAttributeValue<EntityReference>(FLD_CASE_PrimaryContact);
                     if (primaryContactRef == null)
                         validationFailures.Add("Primary contact is missing on the Case.");
                 }
 
-                // -------- ✅ Fetch Service Scheme using Benefit Id 
+                // -------- Fetch Service Scheme using Benefit Id (same) --------
                 string ruleJson = null;
                 Entity scheme = null;
 
@@ -174,55 +191,47 @@ namespace JsonWorkflowEngineRule
                     }
                 }
 
-                // -------- Existing validations: household + income + documents --------
+                // -------- Existing validations: household + income + docs (updated per your changes) --------
                 if (caseRef != null)
                 {
+                    // household (no change)
                     var household = GetActiveHousehold(service, tracing, caseRef.Id);
                     if (household.Count == 0)
                         validationFailures.Add("No active Case Household members found (Date Exited is blank).");
 
-                    var caseIncomeRows = GetCaseIncomeRows(service, tracing, caseRef.Id);
-
-                    // Applicable income present 
-                    var hasApplicableIncomeRow = caseIncomeRows.Any(r =>
+                    // ✅ Validation #2: Applicable income only (new message)
+                    var hasApplicableIncomeYes = HasApplicableIncomeYes(service, tracing, caseRef.Id);
+                    if (!hasApplicableIncomeYes)
                     {
-                        if (!r.Attributes.Contains(FLD_CI_ApplicableIncome) || r[FLD_CI_ApplicableIncome] == null) return false;
-                        if (r[FLD_CI_ApplicableIncome] is bool bb) return bb;
-                        if (r[FLD_CI_ApplicableIncome] is OptionSetValue) return true;
-                        return true;
-                    });
-
-                    var caseYearlyEligibleIncome = inc?.GetAttributeValue<Money>(FLD_CASE_YearlyEligibleIncome);
-                    var hasYearlyEligibleIncomeOnCase = caseYearlyEligibleIncome != null;
-
-                    if (!hasApplicableIncomeRow && !hasYearlyEligibleIncomeOnCase)
-                    {
-                        validationFailures.Add("Case Income – Applicable case Income is missing (no applicable income rows, and yearly eligible income is missing on Case).");
+                        validationFailures.Add("Case Income – No applicable income found (no case income row with Applicable Income = Yes).");
                     }
 
+                    // ✅ Validation #3: Home Address on Case (mcg_caseaddress) with Null/Future End Date
+                    var addressFail = ValidateCaseHomeAddress(service, tracing, caseRef.Id);
+                    if (!string.IsNullOrWhiteSpace(addressFail))
+                        validationFailures.Add(addressFail);
 
+                    // ✅ Validation #1: Child Citizenship via Birth Certificate document
+                    if (recipientRef != null)
+                    {
+                        var citizenshipFail = ValidateChildCitizenshipFromBirthCertificate(service, tracing, recipientRef.Id);
+                        if (!string.IsNullOrWhiteSpace(citizenshipFail))
+                            validationFailures.Add(citizenshipFail);
+                    }
+
+                    // ✅ Document checks updated to match your screenshot values (TEXT category/subcategory)
+                    // (Keeping your existing validations but aligning to your UI labels)
                     if (primaryContactRef != null)
                     {
-                        // your existing required docs checks
-                        if (!HasDocument(service, tracing, caseRef.Id, primaryContactRef.Id, "Identity", null))
-                            validationFailures.Add("Proof of identity document is missing.");
-                        if (!HasDocument(service, tracing, caseRef.Id, primaryContactRef.Id, "Residency", null))
-                            validationFailures.Add("Proof of residency document is missing.");
-                        if (!HasDocument(service, tracing, caseRef.Id, primaryContactRef.Id, "Income", "Tax Return"))
-                            validationFailures.Add("Most recent income tax return document is missing.");
+                        // Proof of Address (Identification > Proof of Address)
+                        if (!HasDocumentByCategorySubcategory(service, tracing, caseRef.Id, primaryContactRef.Id, "Identification", "Proof of Address"))
+                            validationFailures.Add("Proof of address document is missing.");
 
-                        if (IsSingleParentMaritalScenario(service, tracing, primaryContactRef))
-                        {
-                            if (!HasDocument(service, tracing, caseRef.Id, primaryContactRef.Id, "Income", "Child Support"))
-                                validationFailures.Add("Child support document is missing (Income > Child Support).");
-                        }
+                        // Tax Returns (Income > Tax Returns)
+                        if (!HasDocumentByCategorySubcategory(service, tracing, caseRef.Id, primaryContactRef.Id, "Income", "Tax Returns"))
+                            validationFailures.Add("Most recent income tax return document is missing.");
                     }
                 }
-
-                // ✅ Address County validation 
-                var countyFail = ValidateRecipientCountyIsMontgomery(service, tracing, bli);
-                if (!string.IsNullOrWhiteSpace(countyFail))
-                    validationFailures.Add(countyFail);
 
                 // -------- Stop if validations failed --------
                 if (validationFailures.Count > 0)
@@ -234,7 +243,7 @@ namespace JsonWorkflowEngineRule
                     return;
                 }
 
-                //Rule evaluation
+                // -------- Rule evaluation (unchanged engine) --------
                 var def = ParseRuleDefinition(ruleJson);
                 var tokens = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
 
@@ -262,7 +271,6 @@ namespace JsonWorkflowEngineRule
 
         private static Entity GetServiceSchemeForBenefit(IOrganizationService svc, ITracingService tracing, Guid benefitId)
         {
-            // Find the latest active scheme for benefit (if multiples exist)
             var qe = new QueryExpression(ENT_ServiceScheme)
             {
                 ColumnSet = new ColumnSet(FLD_SCHEME_RuleJson, FLD_SCHEME_BenefitName),
@@ -271,7 +279,6 @@ namespace JsonWorkflowEngineRule
 
             qe.Criteria.AddCondition(FLD_SCHEME_BenefitName, ConditionOperator.Equal, benefitId);
             qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0); // Active
-
             qe.Orders.Add(new OrderExpression("createdon", OrderType.Descending));
 
             var scheme = svc.RetrieveMultiple(qe).Entities.FirstOrDefault();
@@ -281,44 +288,130 @@ namespace JsonWorkflowEngineRule
 
         #endregion
 
-        #region ====== Address Validation (Recipient -> Primary Address -> CountyText) ======
+        #region ====== NEW VALIDATIONS ======
 
-        private static string ValidateRecipientCountyIsMontgomery(IOrganizationService svc, ITracingService tracing, Entity bli)
+        // ✅ #2 Applicable income = YES
+        private static bool HasApplicableIncomeYes(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            var qe = new QueryExpression(ENT_CaseIncome)
+            {
+                ColumnSet = new ColumnSet(FLD_CI_ApplicableIncome),
+                TopCount = 1
+            };
+
+            qe.Criteria.AddCondition(FLD_CI_Case, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_CI_ApplicableIncome, ConditionOperator.Equal, true);
+
+            var found = svc.RetrieveMultiple(qe).Entities.Any();
+            tracing.Trace($"HasApplicableIncomeYes(caseId={caseId}) = {found}");
+            return found;
+        }
+
+        // ✅ #3 Case address: must exist and have at least one row with EndDate null or future/today
+        private static string ValidateCaseHomeAddress(IOrganizationService svc, ITracingService tracing, Guid caseId)
         {
             try
             {
-                var recipientRef = bli.GetAttributeValue<EntityReference>(FLD_BLI_RecipientContact);
-                if (recipientRef == null)
-                    return "Beneficiary (Recipient Contact) is missing on Benefit Line Item.";
+                var qe = new QueryExpression(ENT_CaseAddress)
+                {
+                    ColumnSet = new ColumnSet(FLD_CA_EndDate)
+                };
+                qe.Criteria.AddCondition(FLD_CA_Case, ConditionOperator.Equal, caseId);
 
-                var contact = svc.Retrieve("contact", recipientRef.Id, new ColumnSet(FLD_CONTACT_PrimaryAddress));
-                var addrRef = contact.GetAttributeValue<EntityReference>(FLD_CONTACT_PrimaryAddress);
+                var rows = svc.RetrieveMultiple(qe).Entities.ToList();
+                tracing.Trace($"CaseAddress rows found: {rows.Count}");
 
-                if (addrRef == null)
-                    return "Beneficiary primary address is missing on Recipient Contact.";
+                if (rows.Count == 0)
+                    return "Home address is missing on Case (no Case Address records found).";
 
-                var addr = svc.Retrieve(ENT_Address, addrRef.Id, new ColumnSet(FLD_ADDR_CountyText));
-                var county = (addr.GetAttributeValue<string>(FLD_ADDR_CountyText) ?? "").Trim();
+                var today = DateTime.UtcNow.Date;
 
-                if (string.IsNullOrWhiteSpace(county))
-                    return "County is missing on Beneficiary primary address.";
+                // Active if enddate is null OR enddate >= today
+                bool hasActive = rows.Any(r =>
+                {
+                    var end = r.GetAttributeValue<DateTime?>(FLD_CA_EndDate);
+                    return !end.HasValue || end.Value.Date >= today;
+                });
 
-                if (!string.Equals(county, REQUIRED_COUNTY, StringComparison.OrdinalIgnoreCase))
-                    return $"Beneficiary county must be '{REQUIRED_COUNTY}', but found '{county}'.";
+                if (!hasActive)
+                    return "Home address is missing on Case (no address with a Null or Future End Date).";
 
-                tracing.Trace($"PASS: Beneficiary county validated. County='{county}'.");
+                tracing.Trace("PASS: Case home address validation.");
                 return null;
             }
             catch (Exception ex)
             {
-                tracing.Trace("ValidateRecipientCountyIsMontgomery ERROR: " + ex);
-                return "Unable to validate beneficiary address county due to an internal error.";
+                tracing.Trace("ValidateCaseHomeAddress ERROR: " + ex);
+                return "Unable to validate Case Home Address due to an internal error.";
             }
+        }
+
+        // ✅ #1 Child citizenship: needs Birth Certificate doc + beneficiary citizenship must be Montgomery
+        private static string ValidateChildCitizenshipFromBirthCertificate(IOrganizationService svc, ITracingService tracing, Guid beneficiaryContactId)
+        {
+            try
+            {
+                // Find birth certificate doc for beneficiary contact (category/subcategory are TEXT)
+                var qe = new QueryExpression(ENT_UploadDocument)
+                {
+                    ColumnSet = new ColumnSet("createdon"),
+                    TopCount = 1
+                };
+
+                qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, beneficiaryContactId);
+                qe.Criteria.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, "Verifications");
+                qe.Criteria.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, "Birth Certificate");
+
+                var hasBirthCert = svc.RetrieveMultiple(qe).Entities.Any();
+
+                tracing.Trace($"Birth Certificate doc found for beneficiary={beneficiaryContactId}: {hasBirthCert}");
+
+                if (!hasBirthCert)
+                    return "No document is present for beneficiary under Verifications > Birth Certificate.";
+
+                // Birth certificate exists -> check child citizenship field on contact
+                var contact = svc.Retrieve("contact", beneficiaryContactId, new ColumnSet(FLD_CONTACT_ChildCitizenship));
+                var citizenship = (contact.GetAttributeValue<string>(FLD_CONTACT_ChildCitizenship) ?? "").Trim();
+
+                if (string.IsNullOrWhiteSpace(citizenship))
+                    return "Child citizenship is missing on Beneficiary (mcg_childcitizenship).";
+
+                if (!string.Equals(citizenship, REQUIRED_CITIZENSHIP, StringComparison.OrdinalIgnoreCase))
+                    return $"Child citizenship does not match {REQUIRED_CITIZENSHIP} (Current: {citizenship}).";
+
+                tracing.Trace($"PASS: Child citizenship validated. Citizenship='{citizenship}'.");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                tracing.Trace("ValidateChildCitizenshipFromBirthCertificate ERROR: " + ex);
+                return "Unable to validate Child Citizenship due to an internal error.";
+            }
+        }
+
+        // Doc helper (TEXT category/subcategory)
+        private static bool HasDocumentByCategorySubcategory(IOrganizationService svc, ITracingService tracing, Guid caseId, Guid contactId, string category, string subCategory)
+        {
+            var qe = new QueryExpression(ENT_UploadDocument)
+            {
+                ColumnSet = new ColumnSet("createdon"),
+                TopCount = 1
+            };
+
+            // keep both filters as you previously had (case + contact)
+            qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, contactId);
+            qe.Criteria.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, category);
+            qe.Criteria.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, subCategory);
+
+            var found = svc.RetrieveMultiple(qe).Entities.Any();
+            tracing.Trace($"HasDocumentByCategorySubcategory(case={caseId}, contact={contactId}, {category}/{subCategory}) = {found}");
+            return found;
         }
 
         #endregion
 
-        #region ====== Household / Income / Docs ======
+        #region ====== Household ======
 
         private static List<Entity> GetActiveHousehold(IOrganizationService svc, ITracingService tracing, Guid caseId)
         {
@@ -336,59 +429,6 @@ namespace JsonWorkflowEngineRule
             var results = svc.RetrieveMultiple(qe).Entities.ToList();
             tracing.Trace($"Active household count: {results.Count}");
             return results;
-        }
-
-        private static List<Entity> GetCaseIncomeRows(IOrganizationService svc, ITracingService tracing, Guid caseId)
-        {
-            var qe = new QueryExpression(ENT_CaseIncome)
-            {
-                ColumnSet = new ColumnSet(FLD_CI_ApplicableIncome, FLD_CI_Amount)
-            };
-            qe.Criteria.AddCondition(FLD_CI_Case, ConditionOperator.Equal, caseId);
-
-            var results = svc.RetrieveMultiple(qe).Entities.ToList();
-            tracing.Trace($"Case income rows count: {results.Count}");
-            return results;
-        }
-
-        private static bool HasDocument(IOrganizationService svc, ITracingService tracing, Guid caseId, Guid contactId, string category, string subCategoryOrNull)
-        {
-            var qe = new QueryExpression(ENT_UploadDocument)
-            {
-                ColumnSet = new ColumnSet("createdon"),
-                TopCount = 1
-            };
-
-            qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
-            qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, contactId);
-            qe.Criteria.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, category);
-
-            if (!string.IsNullOrWhiteSpace(subCategoryOrNull))
-                qe.Criteria.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, subCategoryOrNull);
-
-            var found = svc.RetrieveMultiple(qe).Entities.Any();
-            tracing.Trace($"HasDocument({category}/{subCategoryOrNull}) = {found}");
-            return found;
-        }
-
-        private static bool IsSingleParentMaritalScenario(IOrganizationService svc, ITracingService tracing, EntityReference contactRef)
-        {
-            var contact = svc.Retrieve("contact", contactRef.Id, new ColumnSet(FLD_CONTACT_MaritalStatus));
-            if (!contact.Contains(FLD_CONTACT_MaritalStatus)) return false;
-
-            string label = null;
-            if (contact.FormattedValues.ContainsKey(FLD_CONTACT_MaritalStatus))
-                label = contact.FormattedValues[FLD_CONTACT_MaritalStatus];
-
-            tracing.Trace($"Marital status label={label}");
-
-            if (!string.IsNullOrWhiteSpace(label))
-            {
-                var l = label.Trim().ToLowerInvariant();
-                return l.Contains("divorc") || l.Contains("separat") || l.Contains("never") || l.Contains("single");
-            }
-
-            return false;
         }
 
         #endregion
