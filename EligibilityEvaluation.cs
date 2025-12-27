@@ -23,15 +23,16 @@ namespace JsonWorkflowEngineRule
 
         #region ====== ENTITIES ======
 
-        private const string ENT_CaseExpense = "mcg_caseexpense";
-        private const string ENT_CaseAsset = "mcg_caseasset";
         private const string ENT_BenefitLineItem = "mcg_casebenefitplanlineitem";
         private const string ENT_Case = "incident";
         private const string ENT_ServiceScheme = "mcg_servicescheme";
 
         private const string ENT_CaseHousehold = "mcg_casehousehold";
         private const string ENT_CaseIncome = "mcg_caseincome";
+        private const string ENT_CaseExpense = "mcg_caseexpense";
+
         private const string ENT_UploadDocument = "mcg_documentextension";
+
         private const string ENT_CaseAddress = "mcg_caseaddress";
 
         #endregion
@@ -40,13 +41,18 @@ namespace JsonWorkflowEngineRule
 
         // BLI fields
         private const string FLD_BLI_RegardingCase = "mcg_regardingincident";
+
+        // Verified? is Choice
         private const string FLD_BLI_Verified = "mcg_verifiedids";
-        private const string FLD_BLI_Benefit = "mcg_servicebenefitnames";
-        private const string FLD_BLI_RecipientContact = "mcg_recipientcontact";
+
+        // Choice values (from your screenshot)
         private const int VERIFIED_NO = 568020000;
         private const int VERIFIED_YES = 568020001;
 
-        // ✅ Care validations 
+        private const string FLD_BLI_Benefit = "mcg_servicebenefitnames";
+        private const string FLD_BLI_RecipientContact = "mcg_recipientcontact";
+
+        // Care validations
         private const string FLD_BLI_CareServiceType = "mcg_careservicetype";
         private const string FLD_BLI_CareServiceLevel = "mcg_careservicelevel";
 
@@ -66,26 +72,23 @@ namespace JsonWorkflowEngineRule
         private const string FLD_CH_StateCode = "statecode";
 
         // Case Income fields
-        private const string FLD_Common_Case = "mcg_case";
         private const string FLD_CI_Case = "mcg_case";
-        private const string FLD_CI_ApplicableIncome = "mcg_applicableincome";
-        private const string FLD_CI_Amount = "mcg_amount";
+        private const string FLD_CI_ApplicableIncome = "mcg_applicableincome"; // income applicable
 
-        // Case Expense fields
-        private const string FLD_CE_ApplicableExpense = "mcg_applicableincome";
+        // Expense uses same logical name for applicable flag (your update)
+        private const string FLD_Common_Case = "mcg_case";
 
         // Document Extension (category/subcategory are TEXT fields)
         private const string FLD_DOC_Case = "mcg_case";
         private const string FLD_DOC_Contact = "mcg_contact";
         private const string FLD_DOC_Category = "mcg_uploaddocumentcategory";
         private const string FLD_DOC_SubCategory = "mcg_uploaddocumentsubcategory";
-        private const string FLD_DOC_ChildCitizenship = "mcg_childcitizenship";
 
-        // ✅ Beneficiary field (text) to validate citizenship
-        //private const string FLD_CONTACT_ChildCitizenship = "mcg_childcitizenship";
+        // Citizenship is on documentextension
+        private const string FLD_DOC_ChildCitizenship = "mcg_childcitizenship";
         private const string REQUIRED_CITIZENSHIP = "Montgomery";
 
-        // ✅ Case Address fields
+        // Case Address fields
         private const string FLD_CA_Case = "mcg_case";
         private const string FLD_CA_EndDate = "mcg_enddate";
 
@@ -130,33 +133,35 @@ namespace JsonWorkflowEngineRule
                 if (benefitRef == null)
                     validationFailures.Add("Financial Benefit (mcg_servicebenefitnames) is missing on Benefit Line Item.");
 
-                // ✅ Care validations (no change)
+                // Care validations
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceType) || bli[FLD_BLI_CareServiceType] == null)
                     validationFailures.Add("Care/Service Type (mcg_careservicetype) is missing for the selected child.");
 
                 if (!bli.Attributes.Contains(FLD_BLI_CareServiceLevel) || bli[FLD_BLI_CareServiceLevel] == null)
                     validationFailures.Add("Care/Service Level (mcg_careservicelevel) is missing for the selected child.");
 
-                // Verified logic 
+                // Verified? (Choice)
                 OptionSetValue verifiedOs = bli.GetAttributeValue<OptionSetValue>(FLD_BLI_Verified);
 
+                bool verifiedIsYes = false;
                 if (verifiedOs == null)
                 {
                     validationFailures.Add("Verified? (mcg_verifiedids) is not set for the selected child.");
                 }
                 else if (verifiedOs.Value == VERIFIED_YES)
                 {
+                    verifiedIsYes = true;
                     tracing.Trace("Verified? = YES => Documented.");
                 }
                 else if (verifiedOs.Value == VERIFIED_NO)
                 {
+                    // Per your latest requirement: still show note, but validation should block? (you asked earlier to show as validation)
                     validationFailures.Add("Verified is No, so the user is Undocumented.");
                 }
                 else
                 {
                     validationFailures.Add($"Verified? has an unexpected value: {verifiedOs.Value}.");
                 }
-
 
                 // Recipient / Beneficiary contact
                 var recipientRef = bli.GetAttributeValue<EntityReference>(FLD_BLI_RecipientContact);
@@ -165,7 +170,7 @@ namespace JsonWorkflowEngineRule
                     validationFailures.Add("Beneficiary (Recipient Contact) is missing on Benefit Line Item.");
                 }
 
-                // -------- Load Case (if exists) --------
+                // -------- Load Case --------
                 Entity inc = null;
                 EntityReference primaryContactRef = null;
 
@@ -177,7 +182,7 @@ namespace JsonWorkflowEngineRule
                         validationFailures.Add("Primary contact is missing on the Case.");
                 }
 
-                // -------- Fetch Service Scheme using Benefit Id (same) --------
+                // -------- Fetch Service Scheme using Benefit Id --------
                 string ruleJson = null;
                 Entity scheme = null;
 
@@ -196,26 +201,25 @@ namespace JsonWorkflowEngineRule
                     }
                 }
 
-                // -------- Existing validations: household + income + docs (updated per your changes) --------
+                // -------- Validations --------
                 if (caseRef != null)
                 {
-                    // household (no change)
+                    // household
                     var household = GetActiveHousehold(service, tracing, caseRef.Id);
                     if (household.Count == 0)
                         validationFailures.Add("No active Case Household members found (Date Exited is blank).");
 
-                    // ✅ Validation #2: Applicable income only (new message
-                    if (!HasAnyCaseIncome(service, tracing, caseRef.Id))
-                    {
+                    // Validation #2: ANY Case Income row exists (per your change)
+                    var hasAnyIncome = HasAnyCaseIncome(service, tracing, caseRef.Id);
+                    if (!hasAnyIncome)
                         validationFailures.Add("Case Income – No case income record found.");
-                    }
 
-                    // ✅ Validation #3: Home Address on Case (mcg_caseaddress) with Null/Future End Date
+                    // Validation #3: Case Address exists with null/future end date
                     var addressFail = ValidateCaseHomeAddress(service, tracing, caseRef.Id);
                     if (!string.IsNullOrWhiteSpace(addressFail))
                         validationFailures.Add(addressFail);
 
-                    // ✅ Validation #1: Child Citizenship via Birth Certificate document
+                    // Validation #1: Citizenship read from Birth Certificate doc (mcg_documentextension)
                     if (recipientRef != null)
                     {
                         var citizenshipFail = ValidateChildCitizenshipFromBirthCertificate(service, tracing, recipientRef.Id);
@@ -223,13 +227,12 @@ namespace JsonWorkflowEngineRule
                             validationFailures.Add(citizenshipFail);
                     }
 
+                    // Proof of Address and Tax Returns (TEXT category/subcategory)
                     if (primaryContactRef != null)
                     {
-                        // Proof of Address (Identification > Proof of Address)
                         if (!HasDocumentByCategorySubcategory(service, tracing, caseRef.Id, primaryContactRef.Id, "Identification", "Proof of Address"))
                             validationFailures.Add("Proof of address document is missing.");
 
-                        // Tax Returns (Income > Tax Returns)
                         if (!HasDocumentByCategorySubcategory(service, tracing, caseRef.Id, primaryContactRef.Id, "Income", "Tax Returns"))
                             validationFailures.Add("Most recent income tax return document is missing.");
                     }
@@ -239,27 +242,57 @@ namespace JsonWorkflowEngineRule
                 if (validationFailures.Count > 0)
                 {
                     tracing.Trace("VALIDATION FAILED. Returning validation failures only.");
+
                     context.OutputParameters[OUT_IsEligible] = false;
                     context.OutputParameters[OUT_ResultMessage] = "Validation failed. Please fix the issues and try again.";
-                    context.OutputParameters[OUT_ResultJson] = BuildResultJson(validationFailures, null);
+
+                    context.OutputParameters[OUT_ResultJson] = BuildResultJson(
+                        validationFailures,
+                        evaluationLines: null,
+                        criteriaSummary: null,
+                        parametersConsidered: null,
+                        isEligible: false,
+                        resultMessage: "Validation failed."
+                    );
+
                     return;
                 }
 
-                // -------- Rule evaluation (unchanged engine) --------
+                // -------- Rule evaluation --------
                 var def = ParseRuleDefinition(ruleJson);
                 var tokens = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
 
+                // Add small “facts” (helps summary UI; safe even if you don’t show it)
+                var facts = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                facts["benefit.verifiedFlag"] = verifiedIsYes ? "Yes" : "No";
+
                 if (caseRef != null)
                 {
+                    // Rule 1 token population (income + expense; asset ignored)
                     PopulateRule1Tokens(service, tracing, caseRef.Id, tokens);
                 }
 
                 var evalLines = new List<EvalLine>();
                 bool overall = EvaluateRuleDefinition(def, tokens, tracing, evalLines);
 
+                // Criteria summary per top-level rule group (Q1, Q2, ...)
+                var criteriaSummary = EvaluateTopLevelGroups(def, tokens, tracing);
+
+                // Parameters considered (Rule 1 only for now)
+                var parametersConsidered = BuildParametersConsideredForRule1(tokens);
+
                 context.OutputParameters[OUT_IsEligible] = overall;
                 context.OutputParameters[OUT_ResultMessage] = overall ? "Eligible" : "Not Eligible";
-                context.OutputParameters[OUT_ResultJson] = BuildResultJson(new List<string>(), evalLines);
+
+                context.OutputParameters[OUT_ResultJson] = BuildResultJson(
+                    validationFailures: new List<string>(),
+                    evaluationLines: evalLines,
+                    criteriaSummary: criteriaSummary,
+                    parametersConsidered: parametersConsidered,
+                    isEligible: overall,
+                    resultMessage: overall ? "Eligible" : "Not Eligible",
+                    facts: facts
+                );
 
                 tracing.Trace("Eligibility evaluation completed.");
             }
@@ -295,9 +328,8 @@ namespace JsonWorkflowEngineRule
 
         #endregion
 
-        #region ====== NEW VALIDATIONS ======
+        #region ====== VALIDATIONS ======
 
-        // ✅ #2 Applicable income = YES
         private static bool HasAnyCaseIncome(IOrganizationService svc, ITracingService tracing, Guid caseId)
         {
             var qe = new QueryExpression(ENT_CaseIncome)
@@ -313,8 +345,6 @@ namespace JsonWorkflowEngineRule
             return found;
         }
 
-
-        // ✅ #3 Case address: must exist and have at least one row with EndDate null or future/today
         private static string ValidateCaseHomeAddress(IOrganizationService svc, ITracingService tracing, Guid caseId)
         {
             try
@@ -329,11 +359,10 @@ namespace JsonWorkflowEngineRule
                 tracing.Trace($"CaseAddress rows found: {rows.Count}");
 
                 if (rows.Count == 0)
-                    return "Home address is missing on Case (no Case Address records found).";
+                    return "Home address is missing on Case (no mcg_caseaddress records found).";
 
                 var today = DateTime.UtcNow.Date;
 
-                // Active if enddate is null OR enddate >= today
                 bool hasActive = rows.Any(r =>
                 {
                     var end = r.GetAttributeValue<DateTime?>(FLD_CA_EndDate);
@@ -353,29 +382,20 @@ namespace JsonWorkflowEngineRule
             }
         }
 
-        // ✅ #1 Child citizenship: needs Birth Certificate doc + beneficiary citizenship must be Montgomery
-        private static string ValidateChildCitizenshipFromBirthCertificate(
-            IOrganizationService svc,
-            ITracingService tracing,
-            Guid beneficiaryContactId)
+        private static string ValidateChildCitizenshipFromBirthCertificate(IOrganizationService svc, ITracingService tracing, Guid beneficiaryContactId)
         {
             try
             {
-
                 var qe = new QueryExpression(ENT_UploadDocument)
                 {
-                    ColumnSet = new ColumnSet(
-                        "createdon",
-                        FLD_DOC_ChildCitizenship
-                    ),
+                    ColumnSet = new ColumnSet("createdon", FLD_DOC_ChildCitizenship),
                     TopCount = 1
                 };
 
                 qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, beneficiaryContactId);
                 qe.Criteria.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, "Verifications");
                 qe.Criteria.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, "Birth Certificate");
-                qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0); // Active doc row
-
+                qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
 
                 qe.Orders.Add(new OrderExpression("createdon", OrderType.Descending));
 
@@ -386,7 +406,6 @@ namespace JsonWorkflowEngineRule
 
                 if (!hasBirthCert)
                     return "No document is present for beneficiary under Verifications > Birth Certificate.";
-
 
                 var citizenship = (doc.GetAttributeValue<string>(FLD_DOC_ChildCitizenship) ?? "").Trim();
 
@@ -406,8 +425,6 @@ namespace JsonWorkflowEngineRule
             }
         }
 
-
-        // Doc helper (TEXT category/subcategory)
         private static bool HasDocumentByCategorySubcategory(IOrganizationService svc, ITracingService tracing, Guid caseId, Guid contactId, string category, string subCategory)
         {
             var qe = new QueryExpression(ENT_UploadDocument)
@@ -416,11 +433,11 @@ namespace JsonWorkflowEngineRule
                 TopCount = 1
             };
 
-            // keep both filters as you previously had (case + contact)
             qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
             qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, contactId);
             qe.Criteria.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, category);
             qe.Criteria.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, subCategory);
+            qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
 
             var found = svc.RetrieveMultiple(qe).Entities.Any();
             tracing.Trace($"HasDocumentByCategorySubcategory(case={caseId}, contact={contactId}, {category}/{subCategory}) = {found}");
@@ -429,35 +446,62 @@ namespace JsonWorkflowEngineRule
 
         #endregion
 
-        #region ====== Validate Rule 1 ======
+        #region ====== Rule 1 token population (Income + Expense only) ======
 
-        private static void PopulateRule1Tokens(
-            IOrganizationService svc,
-            ITracingService tracing,
-            Guid caseId,
-            Dictionary<string, object> tokens)
+        private static void PopulateRule1Tokens(IOrganizationService svc, ITracingService tracing, Guid caseId, Dictionary<string, object> tokens)
         {
-
             tokens["applicableincome"] = HasActiveApplicableIncome(svc, tracing, caseId);
             tokens["applicableexpense"] = HasActiveApplicableExpense(svc, tracing, caseId);
 
             tracing.Trace($"Rule1 Tokens => applicableincome={tokens["applicableincome"]}, applicableexpense={tokens["applicableexpense"]}");
         }
 
+        // Robust Yes check: supports Two Options + Choice (uses FormattedValues "Yes"/"No")
+        private static bool IsYes(Entity row, string attributeLogicalName)
+        {
+            if (row == null) return false;
+            if (!row.Attributes.Contains(attributeLogicalName) || row[attributeLogicalName] == null) return false;
+
+            // Best: FormattedValue for choice/two-options
+            if (row.FormattedValues != null && row.FormattedValues.ContainsKey(attributeLogicalName))
+            {
+                var fmt = (row.FormattedValues[attributeLogicalName] ?? "").Trim();
+                if (fmt.Equals("Yes", StringComparison.OrdinalIgnoreCase)) return true;
+                if (fmt.Equals("No", StringComparison.OrdinalIgnoreCase)) return false;
+            }
+
+            var v = row[attributeLogicalName];
+
+            if (v is bool b) return b;
+
+            if (v is OptionSetValue os)
+            {
+                // fallback (most environments Yes=1) - formatted value above is preferred
+                return os.Value == 1;
+            }
+
+            if (v is int i) return i == 1;
+            if (v is long l) return l == 1;
+
+            var s = v.ToString();
+            return s.Equals("true", StringComparison.OrdinalIgnoreCase) || s.Equals("yes", StringComparison.OrdinalIgnoreCase) || s == "1";
+        }
+
         private static bool HasActiveApplicableIncome(IOrganizationService svc, ITracingService tracing, Guid caseId)
         {
             var qe = new QueryExpression(ENT_CaseIncome)
             {
-                ColumnSet = new ColumnSet("mcg_caseincomeid"),
-                TopCount = 1
+                ColumnSet = new ColumnSet("mcg_caseincomeid", FLD_CI_ApplicableIncome, "statecode"),
+                TopCount = 50
             };
 
             qe.Criteria.AddCondition(FLD_CI_Case, ConditionOperator.Equal, caseId);
-            qe.Criteria.AddCondition(FLD_CI_ApplicableIncome, ConditionOperator.Equal, true);
             qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
 
-            var found = svc.RetrieveMultiple(qe).Entities.Any();
-            tracing.Trace($"HasActiveApplicableIncome(caseId={caseId})={found}");
+            var rows = svc.RetrieveMultiple(qe).Entities;
+            var found = rows.Any(r => IsYes(r, FLD_CI_ApplicableIncome));
+
+            tracing.Trace($"HasActiveApplicableIncome(caseId={caseId}) rows={rows.Count} => {found}");
             return found;
         }
 
@@ -465,22 +509,21 @@ namespace JsonWorkflowEngineRule
         {
             var qe = new QueryExpression(ENT_CaseExpense)
             {
-                ColumnSet = new ColumnSet("mcg_caseexpenseid"),
-                TopCount = 1
+                ColumnSet = new ColumnSet("mcg_caseexpenseid", FLD_CI_ApplicableIncome, "statecode"),
+                TopCount = 50
             };
 
             qe.Criteria.AddCondition(FLD_Common_Case, ConditionOperator.Equal, caseId);
-            qe.Criteria.AddCondition(FLD_CI_ApplicableIncome, ConditionOperator.Equal, true);
             qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
 
-            var found = svc.RetrieveMultiple(qe).Entities.Any();
-            tracing.Trace($"HasActiveApplicableExpense(caseId={caseId})={found}");
+            var rows = svc.RetrieveMultiple(qe).Entities;
+            var found = rows.Any(r => IsYes(r, FLD_CI_ApplicableIncome));
+
+            tracing.Trace($"HasActiveApplicableExpense(caseId={caseId}) rows={rows.Count} => {found}");
             return found;
         }
 
         #endregion
-
-
 
         #region ====== Household ======
 
@@ -518,12 +561,26 @@ namespace JsonWorkflowEngineRule
             return id;
         }
 
-        private static string BuildResultJson(List<string> validationFailures, List<EvalLine> evaluationLines)
+        private static string BuildResultJson(
+            List<string> validationFailures,
+            List<EvalLine> evaluationLines,
+            List<CriteriaSummaryLine> criteriaSummary,
+            List<string> parametersConsidered,
+            bool isEligible,
+            string resultMessage,
+            Dictionary<string, object> facts = null)
         {
             var payload = new
             {
                 validationFailures = validationFailures ?? new List<string>(),
-                lines = evaluationLines ?? new List<EvalLine>()
+                criteriaSummary = criteriaSummary ?? new List<CriteriaSummaryLine>(),
+                parametersConsidered = parametersConsidered ?? new List<string>(),
+                lines = evaluationLines ?? new List<EvalLine>(),
+
+                // NEW (safe extra fields)
+                isEligible = isEligible,
+                resultMessage = resultMessage ?? "",
+                facts = facts ?? new Dictionary<string, object>()
             };
 
             return JsonConvert.SerializeObject(payload);
@@ -531,7 +588,7 @@ namespace JsonWorkflowEngineRule
 
         #endregion
 
-        #region ====== Rule JSON + Evaluator (same as before) ======
+        #region ====== Rule JSON + Evaluator ======
 
         private class RuleDefinition
         {
@@ -564,6 +621,52 @@ namespace JsonWorkflowEngineRule
             public object expected { get; set; }
             public object actual { get; set; }
             public bool pass { get; set; }
+        }
+
+        private class CriteriaSummaryLine
+        {
+            public string id { get; set; }
+            public string label { get; set; }
+            public bool pass { get; set; }
+        }
+
+        private static List<CriteriaSummaryLine> EvaluateTopLevelGroups(
+            RuleDefinition def,
+            Dictionary<string, object> tokens,
+            ITracingService tracing)
+        {
+            var summary = new List<CriteriaSummaryLine>();
+            if (def?.groups == null) return summary;
+
+            foreach (var g in def.groups)
+            {
+                bool groupPass = EvaluateGroup(g, tokens, tracing, new List<EvalLine>(), "ROOT");
+                summary.Add(new CriteriaSummaryLine
+                {
+                    id = g.id,
+                    label = g.label,
+                    pass = groupPass
+                });
+
+                tracing.Trace($"CRITERIA SUMMARY: {g.id} '{g.label}' => {(groupPass ? "PASS" : "FAIL")}");
+            }
+
+            return summary;
+        }
+
+        private static List<string> BuildParametersConsideredForRule1(Dictionary<string, object> tokens)
+        {
+            string YesNo(object v)
+            {
+                if (v is bool b) return b ? "Yes" : "No";
+                return (v?.ToString() ?? "");
+            }
+
+            return new List<string>
+            {
+                $"Applicable Income present (Active + Applicable) = {YesNo(tokens.ContainsKey("applicableincome") ? tokens["applicableincome"] : null)}",
+                $"Applicable Expense present (Active + Applicable) = {YesNo(tokens.ContainsKey("applicableexpense") ? tokens["applicableexpense"] : null)}"
+            };
         }
 
         private static RuleDefinition ParseRuleDefinition(string ruleJson)
