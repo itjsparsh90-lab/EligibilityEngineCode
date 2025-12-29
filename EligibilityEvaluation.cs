@@ -35,6 +35,11 @@ namespace JsonWorkflowEngineRule
 
         private const string ENT_CaseAddress = "mcg_caseaddress";
 
+        // ===== WPA Rule #2: Activity Hours =====
+        private const string ENT_ContactAssociation = "mcg_relationship";     // Contact Association
+        private const string ENT_Income = "mcg_income";                       // Income table (work hours per week is here)
+        private const string ENT_EducationDetails = "mcg_educationdetails";   // Education details (education hours per week is here)
+
         #endregion
 
         #region ====== FIELDS ======
@@ -91,6 +96,28 @@ namespace JsonWorkflowEngineRule
         // Case Address fields
         private const string FLD_CA_Case = "mcg_case";
         private const string FLD_CA_EndDate = "mcg_enddate";
+
+        // ===== WPA Rule #2: Contact Association fields =====
+        private const string FLD_REL_Contact = "mcg_contactid";
+        private const string FLD_REL_RelatedContact = "mcg_relatedcontactid";
+        private const string FLD_REL_RoleType = "mcg_relationshiproletype"; // lookup; we will use FormattedValues
+        private const string FLD_REL_EndDate = "mcg_enddate";
+        private const string FLD_REL_StateCode = "statecode";
+
+        // ===== WPA Rule #2: Income fields =====
+        private const string FLD_INC_Contact = "mcg_contactid";
+        private const string FLD_INC_WorkHours = "mcg_workhours"; // Work Hours per week
+
+        // ===== WPA Rule #2: Education fields =====
+        private const string FLD_EDU_Contact = "mcg_contactid";
+        private const string FLD_EDU_WorkHours = "mcg_workhours"; // Work Hours (education hours per week)
+
+        // ===== WPA Rule #2: Tokens =====
+        // Rule JSON should use: token="activityrequirementmet" equals true
+        private const string TOKEN_ActivityRequirementMet = "activityrequirementmet";
+        private const string TOKEN_Parent1ActivityHours = "parent1activityhoursperweek";
+        private const string TOKEN_Parent2ActivityHours = "parent2activityhoursperweek";
+        private const string TOKEN_ParentsTotalActivityHours = "totalactivityhoursperweek";
 
         #endregion
 
@@ -155,7 +182,7 @@ namespace JsonWorkflowEngineRule
                 }
                 else if (verifiedOs.Value == VERIFIED_NO)
                 {
-                    // Per your latest requirement: still show note, but validation should block? (you asked earlier to show as validation)
+                    // Per your current implementation (do not change)
                     validationFailures.Add("Verified is No, so the user is Undocumented.");
                 }
                 else
@@ -270,6 +297,13 @@ namespace JsonWorkflowEngineRule
                 {
                     // Rule 1 token population (income + expense; asset ignored)
                     PopulateRule1Tokens(service, tracing, caseRef.Id, tokens);
+
+                    // ===== Rule 2 token population (WPA Activity) =====
+                    // beneficiary is recipientRef (mcg_recipientcontact)
+                    if (recipientRef != null)
+                    {
+                        PopulateRule2Tokens_WpaActivity(service, tracing, recipientRef.Id, tokens, facts);
+                    }
                 }
 
                 var evalLines = new List<EvalLine>();
@@ -278,7 +312,7 @@ namespace JsonWorkflowEngineRule
                 // Criteria summary per top-level rule group (Q1, Q2, ...)
                 var criteriaSummary = EvaluateTopLevelGroups(def, tokens, tracing);
 
-                // Parameters considered (Rule 1 only for now)
+                // Parameters considered (Rule 1 only for now) - kept unchanged
                 var parametersConsidered = BuildParametersConsideredForRule1(tokens);
 
                 context.OutputParameters[OUT_IsEligible] = overall;
@@ -521,6 +555,269 @@ namespace JsonWorkflowEngineRule
 
             tracing.Trace($"HasActiveApplicableExpense(caseId={caseId}) rows={rows.Count} => {found}");
             return found;
+        }
+
+        #endregion
+
+        #region ====== Rule 2 token population (WPA Activity Hours) ======
+
+        /// <summary>
+        /// Rule 2 (WPA Activity):
+        /// Beneficiary -> Contact Association (mcg_relationship) -> Father/Mother -> related parent contact
+        /// Parent total hours/week = SUM(mcg_income.mcg_workhours) + SUM(mcg_educationdetails.mcg_workhours)
+        /// Pass if EACH parent found (Father/Mother) has total >= 25
+        /// </summary>
+        /// <summary>
+        /// Rule 2 (WPA Activity):
+        /// Beneficiary -> Contact Association (mcg_relationship) -> Father/Mother -> related parent contact
+        ///
+        /// For EACH parent found:
+        ///   Employment hours/week = SUM(mcg_income.mcg_workhours)  [all active income rows for that parent]
+        ///   Education hours/week  = SUM(mcg_educationdetails.mcg_workhours)  [all active education rows for that parent]
+        ///   Total activity hours/week = employment + education
+        ///
+        /// WPA pass logic (current requirement): EACH parent must have Total >= 25.
+        ///
+        /// Notes:
+        /// - The rule JSON in PCF uses token: totalactivityhoursperweek >= 25
+        ///   To represent "each parent meets 25", we set totalactivityhoursperweek = MIN(parentTotalHours).
+        ///   Then (MIN >= 25) ⇢ all parents >= 25.
+        /// - We also add facts for UI summary (employment/education breakdown + per-parent totals).
+        /// </summary>
+        private static void PopulateRule2Tokens_WpaActivity(
+            IOrganizationService svc,
+            ITracingService tracing,
+            Guid beneficiaryContactId,
+            Dictionary<string, object> tokens,
+            Dictionary<string, object> facts)
+        {
+            var parentIds = GetActiveParentsForBeneficiary(svc, tracing, beneficiaryContactId);
+
+            // If none found, safe default (rule fails)
+            if (parentIds.Count == 0)
+            {
+                tokens[TOKEN_ActivityRequirementMet] = false;
+                tokens[TOKEN_Parent1ActivityHours] = 0m;
+                tokens[TOKEN_Parent2ActivityHours] = 0m;
+
+                // IMPORTANT: token used in rule JSON (min across parents; here none -> 0)
+                tokens[TOKEN_ParentsTotalActivityHours] = 0m; // (this constant is totalactivityhoursperweek)
+
+                facts["wpa.parents.count"] = 0;
+                facts["wpa.activity.eachParentMeets25"] = false;
+                facts["wpa.activity.employmentHoursPerWeekTotal"] = 0m;
+                facts["wpa.activity.educationHoursPerWeekTotal"] = 0m;
+                facts["wpa.activity.combinedHoursPerWeekTotal"] = 0m;
+
+                tracing.Trace("Rule2: No Father/Mother parents found => activityrequirementmet=false, totalactivityhoursperweek=0");
+                return;
+            }
+
+            // Parent-level totals
+            var parentTotals = new List<decimal>();
+            var parentWorkTotals = new List<decimal>();
+            var parentEduTotals = new List<decimal>();
+            var parentNames = new List<string>();
+
+            decimal allWork = 0m;
+            decimal allEdu = 0m;
+
+            foreach (var pid in parentIds)
+            {
+                var work = SumIncomeWorkHoursPerWeek(svc, tracing, pid);
+                var edu = SumEducationWorkHoursPerWeek(svc, tracing, pid);
+                var total = work + edu;
+
+                allWork += work;
+                allEdu += edu;
+
+                parentWorkTotals.Add(work);
+                parentEduTotals.Add(edu);
+                parentTotals.Add(total);
+
+                // Name is only for UI friendliness; if missing, keep empty.
+                var nm = TryGetContactFullName(svc, tracing, pid);
+                parentNames.Add(nm ?? string.Empty);
+
+                tracing.Trace($"Rule2: Parent={pid} Name='{nm}' WorkHours(sum mcg_income.mcg_workhours)={work}, EduHours(sum mcg_educationdetails.mcg_workhours)={edu}, Total={total}");
+            }
+
+            // Pass if each parent total >= 25
+            bool eachParentMeets25 = parentTotals.All(h => h >= 25m);
+
+            // Token used by some rule definitions: per-parent display
+            tokens[TOKEN_ActivityRequirementMet] = eachParentMeets25;
+            tokens[TOKEN_Parent1ActivityHours] = parentTotals.Count > 0 ? parentTotals[0] : 0m;
+            tokens[TOKEN_Parent2ActivityHours] = parentTotals.Count > 1 ? parentTotals[1] : 0m;
+
+            // Token used in WPA template JSON: totalactivityhoursperweek >= 25
+            // To model "EACH parent must be >= 25", we store MIN(parentTotals)
+            var minAcrossParents = parentTotals.Min();
+            tokens[TOKEN_ParentsTotalActivityHours] = minAcrossParents;
+            tokens["parentstotalactivityhoursperweek"] = allWork + allEdu; // backward-compatible alias
+
+            // Facts for your HTML summary (case-worker friendly)
+            facts["wpa.parents.count"] = parentIds.Count;
+            facts["wpa.activity.eachParentMeets25"] = eachParentMeets25;
+
+            // Totals across parents
+            facts["wpa.activity.employmentHoursPerWeekTotal"] = allWork;
+            facts["wpa.activity.educationHoursPerWeekTotal"] = allEdu;
+            facts["wpa.activity.combinedHoursPerWeekTotal"] = allWork + allEdu;
+
+            // Min across parents (this is what drove the rule token)
+            facts["wpa.activity.minTotalHoursPerWeekAcrossParents"] = minAcrossParents;
+
+            // Per-parent breakdown (supports up to 2 parents for now, but keeps counts)
+            if (parentTotals.Count > 0)
+            {
+                facts["wpa.parent1.name"] = parentNames[0];
+                facts["wpa.parent1.employmentHoursPerWeek"] = parentWorkTotals[0];
+                facts["wpa.parent1.educationHoursPerWeek"] = parentEduTotals[0];
+                facts["wpa.parent1.totalHoursPerWeek"] = parentTotals[0];
+            }
+            if (parentTotals.Count > 1)
+            {
+                facts["wpa.parent2.name"] = parentNames[1];
+                facts["wpa.parent2.employmentHoursPerWeek"] = parentWorkTotals[1];
+                facts["wpa.parent2.educationHoursPerWeek"] = parentEduTotals[1];
+                facts["wpa.parent2.totalHoursPerWeek"] = parentTotals[1];
+            }
+
+            tracing.Trace($"Rule2 Tokens => activityrequirementmet={eachParentMeets25}, parentCount={parentIds.Count}, minTotalAcrossParents(totalactivityhoursperweek)={minAcrossParents}, combinedAllParents={allWork + allEdu}");
+        }
+
+        private static string TryGetContactFullName(IOrganizationService svc, ITracingService tracing, Guid contactId)
+        {
+            try
+            {
+                var c = svc.Retrieve("contact", contactId, new ColumnSet("fullname"));
+                return c.GetAttributeValue<string>("fullname");
+            }
+            catch (Exception ex)
+            {
+                tracing.Trace("TryGetContactFullName failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static List<Guid> GetActiveParentsForBeneficiary(IOrganizationService svc, ITracingService tracing, Guid beneficiaryContactId)
+        {
+            var qe = new QueryExpression(ENT_ContactAssociation)
+            {
+                ColumnSet = new ColumnSet(
+                    FLD_REL_RelatedContact,
+                    FLD_REL_RoleType,
+                    FLD_REL_EndDate,     // optional filter (kept)
+                    FLD_REL_StateCode
+                )
+            };
+
+            // Beneficiary -> association rows
+            qe.Criteria.AddCondition(FLD_REL_Contact, ConditionOperator.Equal, beneficiaryContactId);
+
+            // ✅ Only ACTIVE relationships
+            qe.Criteria.AddCondition(FLD_REL_StateCode, ConditionOperator.Equal, 0);
+
+            // Optional: EndDate is null OR EndDate >= today (keeps future-dated end valid)
+            var today = DateTime.UtcNow.Date;
+            var endFilter = new FilterExpression(LogicalOperator.Or);
+            endFilter.AddCondition(FLD_REL_EndDate, ConditionOperator.Null);
+            endFilter.AddCondition(FLD_REL_EndDate, ConditionOperator.OnOrAfter, today);
+            qe.Criteria.AddFilter(endFilter);
+
+            var rows = svc.RetrieveMultiple(qe).Entities;
+            tracing.Trace($"Rule2: Active ContactAssociation rows for beneficiary={beneficiaryContactId} => {rows.Count}");
+
+            var parents = new HashSet<Guid>();
+
+            foreach (var row in rows)
+            {
+                // Relationship role display text must be Father/Mother
+                if (!row.FormattedValues.TryGetValue(FLD_REL_RoleType, out var roleText) || string.IsNullOrWhiteSpace(roleText))
+                    continue;
+
+                roleText = roleText.Trim();
+
+                if (!roleText.Equals("Father", StringComparison.OrdinalIgnoreCase) &&
+                    !roleText.Equals("Mother", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var related = row.GetAttributeValue<EntityReference>(FLD_REL_RelatedContact);
+                if (related == null || related.Id == Guid.Empty) continue;
+
+                parents.Add(related.Id);
+            }
+
+            return parents.ToList();
+        }
+
+
+        private static decimal SumIncomeWorkHoursPerWeek(IOrganizationService svc, ITracingService tracing, Guid parentContactId)
+        {
+            var qe = new QueryExpression(ENT_Income)
+            {
+                ColumnSet = new ColumnSet(FLD_INC_WorkHours),
+                TopCount = 500
+            };
+
+            qe.Criteria.AddCondition(FLD_INC_Contact, ConditionOperator.Equal, parentContactId);
+            qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+
+            var rows = svc.RetrieveMultiple(qe).Entities;
+            decimal total = 0m;
+
+            foreach (var r in rows)
+            {
+                total += ToDecimalSafe(r.Attributes.Contains(FLD_INC_WorkHours) ? r[FLD_INC_WorkHours] : null);
+            }
+
+            tracing.Trace($"Rule2: Income hours rows={rows.Count} parent={parentContactId} totalWorkHours={total}");
+            return total;
+        }
+
+        private static decimal SumEducationWorkHoursPerWeek(IOrganizationService svc, ITracingService tracing, Guid parentContactId)
+        {
+            var qe = new QueryExpression(ENT_EducationDetails)
+            {
+                ColumnSet = new ColumnSet(FLD_EDU_WorkHours),
+                TopCount = 500
+            };
+
+            qe.Criteria.AddCondition(FLD_EDU_Contact, ConditionOperator.Equal, parentContactId);
+            qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+
+            var rows = svc.RetrieveMultiple(qe).Entities;
+            decimal total = 0m;
+
+            foreach (var r in rows)
+            {
+                total += ToDecimalSafe(r.Attributes.Contains(FLD_EDU_WorkHours) ? r[FLD_EDU_WorkHours] : null);
+            }
+
+            tracing.Trace($"Rule2: Education hours rows={rows.Count} parent={parentContactId} totalEduHours={total}");
+            return total;
+        }
+
+        private static decimal ToDecimalSafe(object raw)
+        {
+            if (raw == null) return 0m;
+            if (raw is decimal d) return d;
+            if (raw is double db) return (decimal)db;
+            if (raw is float f) return (decimal)f;
+            if (raw is int i) return i;
+            if (raw is long l) return l;
+            if (raw is Money m) return m.Value;
+
+            if (decimal.TryParse(raw.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed))
+                return parsed;
+
+            if (decimal.TryParse(raw.ToString(), out parsed))
+                return parsed;
+
+            return 0m;
         }
 
         #endregion
