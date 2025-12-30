@@ -89,6 +89,7 @@ namespace JsonWorkflowEngineRule
         private const string FLD_DOC_Category = "mcg_uploaddocumentcategory";
         private const string FLD_DOC_SubCategory = "mcg_uploaddocumentsubcategory";
 
+        private const string FLD_DOC_Verified = "mcg_verified";
         // Citizenship is on documentextension
         private const string FLD_DOC_ChildCitizenship = "mcg_childcitizenship";
         private const string REQUIRED_CITIZENSHIP = "Montgomery";
@@ -115,9 +116,12 @@ namespace JsonWorkflowEngineRule
         // ===== WPA Rule #2: Tokens =====
         // Rule JSON should use: token="activityrequirementmet" equals true
         private const string TOKEN_ActivityRequirementMet = "activityrequirementmet";
+        private const string TOKEN_EvidenceCareNeededForChild = "evidencecareneededforchild";
         private const string TOKEN_Parent1ActivityHours = "parent1activityhoursperweek";
         private const string TOKEN_Parent2ActivityHours = "parent2activityhoursperweek";
         private const string TOKEN_ParentsTotalActivityHours = "totalactivityhoursperweek";
+        private const string TOKEN_ProofIdentityProvided = "proofidentityprovided";
+
 
         #endregion
 
@@ -232,7 +236,7 @@ namespace JsonWorkflowEngineRule
                 if (caseRef != null)
                 {
                     // household
-                    var household = GetActiveHousehold(service, tracing, caseRef.Id);
+                    var household = GetActiveHouseholdIds(service, tracing, caseRef.Id);
                     if (household.Count == 0)
                         validationFailures.Add("No active Case Household members found (Date Exited is blank).");
 
@@ -303,6 +307,12 @@ namespace JsonWorkflowEngineRule
                     if (recipientRef != null)
                     {
                         PopulateRule2Tokens_WpaActivity(service, tracing, recipientRef.Id, tokens, facts);
+                        // ===== Rule 3 token population (WPA Evidence Care Needed) is derived inside Rule2 (do not override here)
+
+                        // ===== Rule 4 token population (Proof of Identity for all household members) =====
+                        var household = GetActiveHouseholdIds(service, tracing, caseRef.Id);
+                        PopulateRule4Tokens_ProofOfIdentity(service, tracing, caseRef.Id, household, tokens, facts);
+
                     }
                 }
 
@@ -361,6 +371,29 @@ namespace JsonWorkflowEngineRule
         }
 
         #endregion
+
+        private static string GetChoiceFormattedValue(Entity e, string attributeLogicalName)
+        {
+            if (e == null || string.IsNullOrWhiteSpace(attributeLogicalName)) return "";
+
+            // Best: formatted label for choice/two-options
+            if (e.FormattedValues != null && e.FormattedValues.ContainsKey(attributeLogicalName))
+                return (e.FormattedValues[attributeLogicalName] ?? "").Trim();
+
+            if (!e.Attributes.Contains(attributeLogicalName) || e[attributeLogicalName] == null)
+                return "";
+
+            var v = e[attributeLogicalName];
+
+            // If someone stored it as string
+            if (v is string s) return (s ?? "").Trim();
+
+            // If choice but formatted not present, return numeric as string (fallback)
+            if (v is OptionSetValue os) return os.Value.ToString(CultureInfo.InvariantCulture);
+
+            return v.ToString().Trim();
+        }
+
 
         #region ====== VALIDATIONS ======
 
@@ -477,6 +510,176 @@ namespace JsonWorkflowEngineRule
             tracing.Trace($"HasDocumentByCategorySubcategory(case={caseId}, contact={contactId}, {category}/{subCategory}) = {found}");
             return found;
         }
+
+        private static bool HasVerifiedDocumentByCategoryAndAnySubcategory(
+            IOrganizationService svc,
+            ITracingService tracing,
+            Guid caseId,
+            Guid contactId,
+            IEnumerable<string> categoryOptions,
+            IEnumerable<string> subCategoryOptions)
+        {
+            var qe = new QueryExpression(ENT_UploadDocument)
+            {
+                ColumnSet = new ColumnSet(FLD_DOC_Category, FLD_DOC_SubCategory, FLD_DOC_Verified),
+                TopCount = 50
+            };
+
+            qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, contactId);
+            qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+            qe.Criteria.AddCondition(FLD_DOC_Verified, ConditionOperator.Equal, true);
+
+            // category options (OR)
+            var catFilter = new FilterExpression(LogicalOperator.Or);
+            foreach (var c in (categoryOptions ?? Enumerable.Empty<string>()).Where(x => !string.IsNullOrWhiteSpace(x)))
+                catFilter.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, c);
+            if (catFilter.Conditions.Count > 0)
+                qe.Criteria.AddFilter(catFilter);
+
+            // subcategory options (OR)
+            var subFilter = new FilterExpression(LogicalOperator.Or);
+            foreach (var s in (subCategoryOptions ?? Enumerable.Empty<string>()).Where(x => !string.IsNullOrWhiteSpace(x)))
+                subFilter.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, s);
+            if (subFilter.Conditions.Count > 0)
+                qe.Criteria.AddFilter(subFilter);
+
+            var rows = svc.RetrieveMultiple(qe).Entities;
+            var found = rows.Any();
+            tracing.Trace($"HasVerifiedDocumentByCategoryAndAnySubcategory(case={caseId}, contact={contactId}) => {found} (rows={rows.Count})");
+            return found;
+        }
+
+        private static void PopulateRule4Tokens_ProofOfIdentity(
+            IOrganizationService svc,
+            ITracingService tracing,
+            Guid caseId,
+            List<Guid> householdContactIds,
+            Dictionary<string, object> tokens,
+            Dictionary<string, object> facts)
+        {
+            // Rule 4: Proof of identity provided for all household members.
+            // We treat this as: for each contact in Case Household, there must be at least one ACTIVE Case Document
+            // (mcg_documentextension) for that Case + Contact that is marked Verified = Yes and is an Identity document type.
+
+            try
+            {
+                if (householdContactIds == null || householdContactIds.Count == 0)
+                {
+                    // No household members -> cannot satisfy the rule in a meaningful way.
+                    tokens[TOKEN_ProofIdentityProvided] = false;
+                    facts["docs.identity.householdCount"] = 0;
+                    facts["docs.identity.verifiedCount"] = 0;
+                    facts["docs.identity.missingCount"] = 0;
+                    facts["docs.identity.missingContacts"] = "";
+                    facts["docs.identity.missingNames"] = "";
+                    return;
+                }
+
+                // Identity docs: Category = Verifications, SubCategory in the allowed list.
+                // NOTE: If your environment uses different labels/codes, update these lists.
+                var allowedCategoryLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Verification",
+            "Verifications"
+        };
+
+                var allowedSubCategoryLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Birth Certificate",
+            "Driver’s License",
+            "Driver's License",
+            "Passport",
+            "Identification Card"
+        };
+
+                // Pull active documents for this case (statecode=0) that are tied to any household member.
+                // We will later filter by category/subcategory + verified.
+                var qe = new QueryExpression(ENT_UploadDocument)
+                {
+                    ColumnSet = new ColumnSet(FLD_DOC_Contact, FLD_DOC_Case, FLD_DOC_Verified, FLD_DOC_Category, FLD_DOC_SubCategory, "statecode")
+                };
+
+                qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
+                qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0); // Active only
+
+                // Contact IN (...) filter
+                var contactFilter = new ConditionExpression(FLD_DOC_Contact, ConditionOperator.In, householdContactIds.Cast<object>().ToArray());
+                qe.Criteria.AddCondition(contactFilter);
+
+                var docs = svc.RetrieveMultiple(qe).Entities;
+
+                // Build per-contact status
+                var hasVerifiedIdentityDoc = new Dictionary<Guid, bool>();
+                foreach (var id in householdContactIds) hasVerifiedIdentityDoc[id] = false;
+
+                int verifiedCount = 0;
+
+                foreach (var d in docs)
+                {
+                    var contactRef = d.GetAttributeValue<EntityReference>(FLD_DOC_Contact);
+                    if (contactRef == null || contactRef.Id == Guid.Empty) continue;
+
+                    if (!hasVerifiedIdentityDoc.ContainsKey(contactRef.Id))
+                        continue; // not a household member
+
+                    // Category/SubCategory (formatted value preferred, fallback to numeric not used here)
+                    string catLabel = GetChoiceFormattedValue(d, FLD_DOC_Category);
+                    string subLabel = GetChoiceFormattedValue(d, FLD_DOC_SubCategory);
+
+                    if (string.IsNullOrWhiteSpace(catLabel) || !allowedCategoryLabels.Contains(catLabel.Trim()))
+                        continue;
+
+                    if (string.IsNullOrWhiteSpace(subLabel) || !allowedSubCategoryLabels.Contains(subLabel.Trim()))
+                        continue;
+
+                    // Verified yes/no
+                    bool isVerified = IsYes(d, FLD_DOC_Verified);
+                    if (!isVerified) continue;
+
+                    if (!hasVerifiedIdentityDoc[contactRef.Id])
+                    {
+                        hasVerifiedIdentityDoc[contactRef.Id] = true;
+                        verifiedCount++;
+                    }
+                }
+
+                var missingIds = hasVerifiedIdentityDoc.Where(kvp => kvp.Value == false).Select(kvp => kvp.Key).ToList();
+                var missingNames = new List<string>();
+
+                foreach (var id in missingIds)
+                {
+                    var n = TryGetContactFullName(svc, tracing, id);
+                    if (!string.IsNullOrWhiteSpace(n)) missingNames.Add(n);
+                    else missingNames.Add(id.ToString());
+                }
+
+                bool allOk = missingIds.Count == 0;
+
+                tokens[TOKEN_ProofIdentityProvided] = allOk;
+
+                facts["docs.identity.householdCount"] = householdContactIds.Count;
+                facts["docs.identity.verifiedCount"] = verifiedCount;
+                facts["docs.identity.missingCount"] = missingIds.Count;
+                facts["docs.identity.missingContacts"] = string.Join(",", missingIds);
+                facts["docs.identity.missingNames"] = string.Join(", ", missingNames);
+
+                // Add a human-friendly trace to help debugging in Plugin Trace Logs.
+                tracing.Trace($"Rule4 ProofIdentityProvided: household={householdContactIds.Count}, verifiedIdentity={verifiedCount}, missing={missingIds.Count} ({facts["docs.identity.missingNames"]})");
+            }
+            catch (Exception ex)
+            {
+                tracing.Trace("PopulateRule4Tokens_ProofOfIdentity failed: " + ex);
+                tokens[TOKEN_ProofIdentityProvided] = false;
+                facts["docs.identity.householdCount"] = householdContactIds?.Count ?? 0;
+                facts["docs.identity.verifiedCount"] = 0;
+                facts["docs.identity.missingCount"] = householdContactIds?.Count ?? 0;
+                facts["docs.identity.missingContacts"] = householdContactIds != null ? string.Join(",", householdContactIds) : "";
+                facts["docs.identity.missingNames"] = "";
+            }
+        }
+
+
 
         #endregion
 
@@ -597,6 +800,7 @@ namespace JsonWorkflowEngineRule
             if (parentIds.Count == 0)
             {
                 tokens[TOKEN_ActivityRequirementMet] = false;
+                tokens[TOKEN_EvidenceCareNeededForChild] = false;
                 tokens[TOKEN_Parent1ActivityHours] = 0m;
                 tokens[TOKEN_Parent2ActivityHours] = 0m;
 
@@ -647,6 +851,7 @@ namespace JsonWorkflowEngineRule
 
             // Token used by some rule definitions: per-parent display
             tokens[TOKEN_ActivityRequirementMet] = eachParentMeets25;
+            tokens[TOKEN_EvidenceCareNeededForChild] = eachParentMeets25;
             tokens[TOKEN_Parent1ActivityHours] = parentTotals.Count > 0 ? parentTotals[0] : 0m;
             tokens[TOKEN_Parent2ActivityHours] = parentTotals.Count > 1 ? parentTotals[1] : 0m;
 
@@ -660,6 +865,7 @@ namespace JsonWorkflowEngineRule
             facts["wpa.parents.count"] = parentIds.Count;
             facts["wpa.activity.eachParentMeets25"] = eachParentMeets25;
 
+            facts["wpa.rule3.evidenceCareNeededForChild"] = eachParentMeets25;
             // Totals across parents
             facts["wpa.activity.employmentHoursPerWeekTotal"] = allWork;
             facts["wpa.activity.educationHoursPerWeekTotal"] = allEdu;
@@ -824,23 +1030,39 @@ namespace JsonWorkflowEngineRule
 
         #region ====== Household ======
 
-        private static List<Entity> GetActiveHousehold(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        private List<Guid> GetActiveHouseholdIds(IOrganizationService service, ITracingService tracing, Guid caseId)
         {
-            var qe = new QueryExpression(ENT_CaseHousehold)
+            // Household table
+            const string ENT_CASEHOUSEHOLD = "mcg_casehousehold";
+            const string FLD_HH_CASE = "mcg_case";
+            const string FLD_HH_CONTACT = "mcg_contact";
+            const string FLD_STATECODE = "statecode"; // 0 = Active
+
+            var ids = new List<Guid>();
+
+            var qe = new Microsoft.Xrm.Sdk.Query.QueryExpression(ENT_CASEHOUSEHOLD)
             {
-                ColumnSet = new ColumnSet(
-                    FLD_CH_Contact, FLD_CH_DateEntered, FLD_CH_DateExited, FLD_CH_Primary, FLD_CH_StateCode
-                )
+                ColumnSet = new Microsoft.Xrm.Sdk.Query.ColumnSet(FLD_HH_CONTACT),
+                Criteria = new Microsoft.Xrm.Sdk.Query.FilterExpression(Microsoft.Xrm.Sdk.Query.LogicalOperator.And)
             };
 
-            qe.Criteria.AddCondition(FLD_CH_Case, ConditionOperator.Equal, caseId);
-            qe.Criteria.AddCondition(FLD_CH_StateCode, ConditionOperator.Equal, 0);
-            qe.Criteria.AddCondition(FLD_CH_DateExited, ConditionOperator.Null);
+            qe.Criteria.AddCondition(FLD_HH_CASE, Microsoft.Xrm.Sdk.Query.ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_STATECODE, Microsoft.Xrm.Sdk.Query.ConditionOperator.Equal, 0);
 
-            var results = svc.RetrieveMultiple(qe).Entities.ToList();
-            tracing.Trace($"Active household count: {results.Count}");
-            return results;
+            var results = service.RetrieveMultiple(qe);
+
+            foreach (var e in results.Entities)
+            {
+                if (e.Contains(FLD_HH_CONTACT) && e[FLD_HH_CONTACT] is EntityReference er && er.Id != Guid.Empty)
+                {
+                    ids.Add(er.Id);
+                }
+            }
+
+            tracing.Trace($"[Rule4] Active household contacts found: {ids.Count}");
+            return ids;
         }
+
 
         #endregion
 
@@ -906,6 +1128,7 @@ namespace JsonWorkflowEngineRule
         {
             public string id { get; set; }
             public string token { get; set; }
+            public string label { get; set; }
             public string @operator { get; set; }
             public object value { get; set; }
         }
@@ -914,6 +1137,7 @@ namespace JsonWorkflowEngineRule
         {
             public string path { get; set; }
             public string token { get; set; }
+            public string label { get; set; }
             public string op { get; set; }
             public object expected { get; set; }
             public object actual { get; set; }
@@ -925,6 +1149,37 @@ namespace JsonWorkflowEngineRule
             public string id { get; set; }
             public string label { get; set; }
             public bool pass { get; set; }
+        }
+
+
+        private static string GetTokenLabel(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return token;
+
+            switch (token.Trim().ToLowerInvariant())
+            {
+                case "applicableincome": return "Applicable income present";
+                case "applicableexpense": return "Applicable expense present";
+                case "applicableasset": return "Applicable asset present";
+                case "totalactivityhoursperweek": return "Total parent activity hours per week (work + education)";
+                case "enrolledfulltimeprogram": return "Parent enrolled in a full-time program";
+                case "evidencecareneededforchild": return "Evidence care is needed for the child";
+                case "proofidentityprovided": return "Proof of identity provided for all household members";
+                case "proofresidencyprovided": return "Proof of residency provided for all household members";
+                case "mostrecenttaxreturnprovided": return "Most recent income tax return provided";
+                case "pursuingchildsupportorgoodcause": return "Pursuing child support or good cause documented";
+                case "childsupportdocumentprovided": return "Child support document provided";
+                case "singleparentfamily": return "Single-parent family";
+                case "absentparent": return "Absent parent";
+                case "medicalbillsamount": return "Medical bills amount";
+                case "yearlyincome": return "Yearly eligible income";
+                case "householdsize": return "Household size";
+                case "householdsizeadjusted": return "Household size (adjusted)";
+                case "incomecategory": return "Income category (State A-J / C / D)";
+                case "incomewithinrange": return "Income within eligible range";
+                case "incomebelowminc": return "Income below C minimum";
+                default: return token;
+            }
         }
 
         private static List<CriteriaSummaryLine> EvaluateTopLevelGroups(
@@ -995,7 +1250,12 @@ namespace JsonWorkflowEngineRule
             return rootAnd ? results.All(x => x) : results.Any(x => x);
         }
 
-        private static bool EvaluateGroup(RuleGroup group, Dictionary<string, object> tokens, ITracingService tracing, List<EvalLine> lines, string parentPath)
+        private static bool EvaluateGroup(
+    RuleGroup group,
+    Dictionary<string, object> tokens,
+    ITracingService tracing,
+    List<EvalLine> lines,
+    string parentPath)
         {
             var groupPath = $"{parentPath} > {(string.IsNullOrWhiteSpace(group.label) ? group.id : group.label)}";
             var isAnd = string.Equals(group.@operator, "AND", StringComparison.OrdinalIgnoreCase);
@@ -1011,6 +1271,7 @@ namespace JsonWorkflowEngineRule
                 {
                     path = groupPath,
                     token = c.token,
+                    label = GetTokenLabel(c.token),   // ✅ key change
                     op = c.@operator,
                     expected = c.value,
                     actual = actual,
@@ -1025,6 +1286,30 @@ namespace JsonWorkflowEngineRule
             tracing.Trace($"Group '{groupPath}' => {result} (op={group.@operator})");
             return result;
         }
+
+
+        //private static string GetTokenLabel(string token)
+        //{
+        //    if (string.IsNullOrWhiteSpace(token)) return "";
+
+        //    // ✅ Friendly labels for UI (fixes your Rule 3 "evidencecareneededforchild" showing raw token)
+        //    switch (token.Trim().ToLowerInvariant())
+        //    {
+        //        case "evidencecareneededforchild":
+        //            return "Evidence care is needed for the child";
+
+        //        case "totalactivityhoursperweek":
+        //            return "Total parent activity hours per week (work + education)";
+
+        //        case "proofidentityprovided":
+        //            return "Proof of identity provided for all household members";
+
+        //        default:
+        //            // fallback: show token but slightly readable
+        //            return token;
+        //    }
+        //}
+
 
         private static bool EvaluateCondition(Condition c, Dictionary<string, object> tokens, out object actual)
         {
