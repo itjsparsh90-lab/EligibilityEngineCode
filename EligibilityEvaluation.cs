@@ -313,6 +313,9 @@ namespace JsonWorkflowEngineRule
                         var household = GetActiveHouseholdIds(service, tracing, caseRef.Id);
                         PopulateRule4Tokens_ProofOfIdentity(service, tracing, caseRef.Id, household, tokens, facts);
 
+                        // ===== Rule 5 token population (Proof of Residency) =====
+                        PopulateRule5Tokens_ProofOfResidency(service, tracing, caseRef.Id, tokens, facts);
+
                     }
                 }
 
@@ -551,40 +554,37 @@ namespace JsonWorkflowEngineRule
         }
 
         private static void PopulateRule4Tokens_ProofOfIdentity(
-            IOrganizationService svc,
-            ITracingService tracing,
-            Guid caseId,
-            List<Guid> householdContactIds,
-            Dictionary<string, object> tokens,
-            Dictionary<string, object> facts)
+    IOrganizationService svc,
+    ITracingService tracing,
+    Guid caseId,
+    List<Guid> householdContactIds,
+    Dictionary<string, object> tokens,
+    Dictionary<string, object> facts)
         {
-            // Rule 4: Proof of identity provided for all household members.
-            // We treat this as: for each contact in Case Household, there must be at least one ACTIVE Case Document
-            // (mcg_documentextension) for that Case + Contact that is marked Verified = Yes and is an Identity document type.
-
             try
             {
+                // Token name used in your rule JSON
+                const string TOKEN_ProofIdentityProvidedLocal = "proofidentityprovided";
+
                 if (householdContactIds == null || householdContactIds.Count == 0)
                 {
-                    // No household members -> cannot satisfy the rule in a meaningful way.
-                    tokens[TOKEN_ProofIdentityProvided] = false;
+                    tokens[TOKEN_ProofIdentityProvidedLocal] = false;
+
                     facts["docs.identity.householdCount"] = 0;
                     facts["docs.identity.verifiedCount"] = 0;
                     facts["docs.identity.missingCount"] = 0;
-                    facts["docs.identity.missingContacts"] = "";
                     facts["docs.identity.missingNames"] = "";
                     return;
                 }
 
-                // Identity docs: Category = Verifications, SubCategory in the allowed list.
-                // NOTE: If your environment uses different labels/codes, update these lists.
-                var allowedCategoryLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                // Allowed identity doc types (based on your functional screenshot text)
+                var allowedCategory = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "Verification",
             "Verifications"
         };
 
-                var allowedSubCategoryLabels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                var allowedSubCategories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "Birth Certificate",
             "Driver’s License",
@@ -593,91 +593,173 @@ namespace JsonWorkflowEngineRule
             "Identification Card"
         };
 
-                // Pull active documents for this case (statecode=0) that are tied to any household member.
-                // We will later filter by category/subcategory + verified.
+                // Pull docs for this case + household contacts (Active only)
                 var qe = new QueryExpression(ENT_UploadDocument)
                 {
-                    ColumnSet = new ColumnSet(FLD_DOC_Contact, FLD_DOC_Case, FLD_DOC_Verified, FLD_DOC_Category, FLD_DOC_SubCategory, "statecode")
+                    ColumnSet = new ColumnSet(FLD_DOC_Contact, FLD_DOC_Category, FLD_DOC_SubCategory, FLD_DOC_Verified),
+                    Criteria = new FilterExpression(LogicalOperator.And)
                 };
 
                 qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
-                qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0); // Active only
+                qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
 
-                // Contact IN (...) filter
-                var contactFilter = new ConditionExpression(FLD_DOC_Contact, ConditionOperator.In, householdContactIds.Cast<object>().ToArray());
-                qe.Criteria.AddCondition(contactFilter);
+                // Contact IN household ids
+                qe.Criteria.AddCondition(new ConditionExpression(
+                    FLD_DOC_Contact,
+                    ConditionOperator.In,
+                    householdContactIds.Cast<object>().ToArray()
+                ));
 
                 var docs = svc.RetrieveMultiple(qe).Entities;
 
-                // Build per-contact status
-                var hasVerifiedIdentityDoc = new Dictionary<Guid, bool>();
-                foreach (var id in householdContactIds) hasVerifiedIdentityDoc[id] = false;
-
-                int verifiedCount = 0;
+                // Initialize per-contact "has verified identity doc"
+                var hasDoc = householdContactIds.ToDictionary(id => id, id => false);
 
                 foreach (var d in docs)
                 {
                     var contactRef = d.GetAttributeValue<EntityReference>(FLD_DOC_Contact);
                     if (contactRef == null || contactRef.Id == Guid.Empty) continue;
+                    if (!hasDoc.ContainsKey(contactRef.Id)) continue;
 
-                    if (!hasVerifiedIdentityDoc.ContainsKey(contactRef.Id))
-                        continue; // not a household member
+                    var cat = (d.GetAttributeValue<string>(FLD_DOC_Category) ?? "").Trim();
+                    var sub = (d.GetAttributeValue<string>(FLD_DOC_SubCategory) ?? "").Trim();
 
-                    // Category/SubCategory (formatted value preferred, fallback to numeric not used here)
-                    string catLabel = GetChoiceFormattedValue(d, FLD_DOC_Category);
-                    string subLabel = GetChoiceFormattedValue(d, FLD_DOC_SubCategory);
+                    if (!allowedCategory.Contains(cat)) continue;
+                    if (!allowedSubCategories.Contains(sub)) continue;
 
-                    if (string.IsNullOrWhiteSpace(catLabel) || !allowedCategoryLabels.Contains(catLabel.Trim()))
-                        continue;
+                    var verified = IsYes(d, FLD_DOC_Verified);
+                    if (!verified) continue;
 
-                    if (string.IsNullOrWhiteSpace(subLabel) || !allowedSubCategoryLabels.Contains(subLabel.Trim()))
-                        continue;
-
-                    // Verified yes/no
-                    bool isVerified = IsYes(d, FLD_DOC_Verified);
-                    if (!isVerified) continue;
-
-                    if (!hasVerifiedIdentityDoc[contactRef.Id])
-                    {
-                        hasVerifiedIdentityDoc[contactRef.Id] = true;
-                        verifiedCount++;
-                    }
+                    hasDoc[contactRef.Id] = true;
                 }
 
-                var missingIds = hasVerifiedIdentityDoc.Where(kvp => kvp.Value == false).Select(kvp => kvp.Key).ToList();
+                var missingIds = hasDoc.Where(x => !x.Value).Select(x => x.Key).ToList();
                 var missingNames = new List<string>();
 
                 foreach (var id in missingIds)
                 {
-                    var n = TryGetContactFullName(svc, tracing, id);
-                    if (!string.IsNullOrWhiteSpace(n)) missingNames.Add(n);
-                    else missingNames.Add(id.ToString());
+                    var name = TryGetContactFullName(svc, tracing, id);
+                    missingNames.Add(string.IsNullOrWhiteSpace(name) ? id.ToString() : name);
                 }
 
-                bool allOk = missingIds.Count == 0;
+                var allOk = missingIds.Count == 0;
 
-                tokens[TOKEN_ProofIdentityProvided] = allOk;
+                tokens[TOKEN_ProofIdentityProvidedLocal] = allOk;
 
                 facts["docs.identity.householdCount"] = householdContactIds.Count;
-                facts["docs.identity.verifiedCount"] = verifiedCount;
+                facts["docs.identity.verifiedCount"] = householdContactIds.Count - missingIds.Count;
                 facts["docs.identity.missingCount"] = missingIds.Count;
-                facts["docs.identity.missingContacts"] = string.Join(",", missingIds);
                 facts["docs.identity.missingNames"] = string.Join(", ", missingNames);
 
-                // Add a human-friendly trace to help debugging in Plugin Trace Logs.
-                tracing.Trace($"Rule4 ProofIdentityProvided: household={householdContactIds.Count}, verifiedIdentity={verifiedCount}, missing={missingIds.Count} ({facts["docs.identity.missingNames"]})");
+                tracing.Trace($"[Rule4] proofidentityprovided={allOk}; household={householdContactIds.Count}; missing={missingIds.Count}; missingNames={facts["docs.identity.missingNames"]}");
             }
             catch (Exception ex)
             {
-                tracing.Trace("PopulateRule4Tokens_ProofOfIdentity failed: " + ex);
-                tokens[TOKEN_ProofIdentityProvided] = false;
-                facts["docs.identity.householdCount"] = householdContactIds?.Count ?? 0;
-                facts["docs.identity.verifiedCount"] = 0;
-                facts["docs.identity.missingCount"] = householdContactIds?.Count ?? 0;
-                facts["docs.identity.missingContacts"] = householdContactIds != null ? string.Join(",", householdContactIds) : "";
+                tracing.Trace("[Rule4] PopulateRule4Tokens_ProofOfIdentity failed: " + ex);
+                tokens["proofidentityprovided"] = false;
                 facts["docs.identity.missingNames"] = "";
             }
         }
+
+        private static void PopulateRule5Tokens_ProofOfResidency(
+    IOrganizationService svc,
+    ITracingService tracing,
+    Guid caseId,
+    Dictionary<string, object> tokens,
+    Dictionary<string, object> facts)
+        {
+            try
+            {
+                const string TOKEN_ProofResidencyProvidedLocal = "proofresidencyprovided";
+
+                // 1) Case Address check (active = enddate null or future)
+                var qeAddr = new QueryExpression(ENT_CaseAddress)
+                {
+                    ColumnSet = new ColumnSet(FLD_CA_EndDate),
+                    Criteria = new FilterExpression(LogicalOperator.And)
+                };
+                qeAddr.Criteria.AddCondition(FLD_CA_Case, ConditionOperator.Equal, caseId);
+
+                var addresses = svc.RetrieveMultiple(qeAddr).Entities.ToList();
+                var today = DateTime.UtcNow.Date;
+
+                bool hasActiveAddress = addresses.Any(a =>
+                {
+                    var end = a.GetAttributeValue<DateTime?>(FLD_CA_EndDate);
+                    return !end.HasValue || end.Value.Date >= today;
+                });
+
+                facts["rule5.caseAddress.count"] = addresses.Count;
+                facts["rule5.caseAddress.hasActive"] = hasActiveAddress;
+
+                if (!hasActiveAddress)
+                {
+                    tokens[TOKEN_ProofResidencyProvidedLocal] = false;
+                    facts["rule5.docs.hasVerifiedResidencyDoc"] = false;
+                    facts["rule5.docs.matchedDocInfo"] = "";
+                    tracing.Trace("[Rule5] No active case address => proofresidencyprovided=false");
+                    return;
+                }
+
+                // 2) Supporting document (verified) for the CASE (any contact)
+                // Category/SubCategory are TEXT fields in your table.
+                // Verified is Yes/No (Two Options).
+                var qeDoc = new QueryExpression(ENT_UploadDocument)
+                {
+                    ColumnSet = new ColumnSet(FLD_DOC_Category, FLD_DOC_SubCategory, FLD_DOC_Verified, FLD_DOC_Contact),
+                    Criteria = new FilterExpression(LogicalOperator.And),
+                    TopCount = 200
+                };
+
+                qeDoc.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
+                qeDoc.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+                qeDoc.Criteria.AddCondition(FLD_DOC_Verified, ConditionOperator.Equal, true);
+
+                var docs = svc.RetrieveMultiple(qeDoc).Entities;
+
+                bool match = false;
+                string matchedInfo = "";
+
+                foreach (var d in docs)
+                {
+                    var cat = (d.GetAttributeValue<string>(FLD_DOC_Category) ?? "").Trim();
+                    var sub = (d.GetAttributeValue<string>(FLD_DOC_SubCategory) ?? "").Trim();
+
+                    bool ok =
+                        (cat.Equals("Identification", StringComparison.OrdinalIgnoreCase) &&
+                         sub.Equals("Proof of Address", StringComparison.OrdinalIgnoreCase))
+                        ||
+                        ((cat.Equals("Verification", StringComparison.OrdinalIgnoreCase) || cat.Equals("Verifications", StringComparison.OrdinalIgnoreCase)) &&
+                         (sub.Equals("Driver’s License", StringComparison.OrdinalIgnoreCase) ||
+                          sub.Equals("Driver's License", StringComparison.OrdinalIgnoreCase) ||
+                          sub.Equals("Proof of Address", StringComparison.OrdinalIgnoreCase)));
+
+                    if (ok)
+                    {
+                        match = true;
+
+                        var cRef = d.GetAttributeValue<EntityReference>(FLD_DOC_Contact);
+                        var who = (cRef != null && cRef.Id != Guid.Empty) ? (TryGetContactFullName(svc, tracing, cRef.Id) ?? cRef.Id.ToString()) : "N/A";
+                        matchedInfo = $"{cat} / {sub} (Verified) - Contact: {who}";
+                        break;
+                    }
+                }
+
+                tokens[TOKEN_ProofResidencyProvidedLocal] = match;
+                facts["rule5.docs.hasVerifiedResidencyDoc"] = match;
+                facts["rule5.docs.matchedDocInfo"] = matchedInfo;
+
+                tracing.Trace($"[Rule5] proofresidencyprovided={match}; matchedDoc='{matchedInfo}'");
+            }
+            catch (Exception ex)
+            {
+                tracing.Trace("[Rule5] PopulateRule5Tokens_ProofOfResidency failed: " + ex);
+                tokens["proofresidencyprovided"] = false;
+                facts["rule5.docs.hasVerifiedResidencyDoc"] = false;
+                facts["rule5.docs.matchedDocInfo"] = "";
+            }
+        }
+
 
 
 
