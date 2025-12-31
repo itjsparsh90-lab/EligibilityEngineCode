@@ -35,6 +35,13 @@ namespace JsonWorkflowEngineRule
 
         private const string ENT_CaseAddress = "mcg_caseaddress";
 
+        private const string ENT_EligibilityAdmin = "mcg_eligibilityadmin";
+        private const string ENT_EligibilityIncomeRange = "mcg_eligibilityincomerange";
+        private const string ENT_SubsidyTableName = "mcg_subsidytablename";
+        private const string ENT_ContactTableName = "contact";
+        private const string ENT_CaseInvolvedParties = "mcg_caseinvolvedparties";
+        private const string ENT_RelationshipRole = "mcg_relationshiprole";
+
         // ===== WPA Rule #2: Activity Hours =====
         private const string ENT_ContactAssociation = "mcg_relationship";     // Contact Association
         private const string ENT_Income = "mcg_income";                       // Income table (work hours per week is here)
@@ -49,6 +56,9 @@ namespace JsonWorkflowEngineRule
 
         // Verified? is Choice
         private const string FLD_BLI_Verified = "mcg_verifiedids";
+
+        //Contact fields
+        private const string FLD_Con_MaritalStatus = "familystatuscode";
 
         // Choice values (from your screenshot)
         private const int VERIFIED_NO = 568020000;
@@ -67,6 +77,9 @@ namespace JsonWorkflowEngineRule
 
         // Case fields
         private const string FLD_CASE_PrimaryContact = "mcg_contact";
+        private const string FLD_CASE_IncidentId = "incidentid";
+        private const string FLD_CASE_YearlyEligibleIncome = "mcg_yearlyeligibleincome";
+        private const string FLD_CASE_YearlyHouseholdIncome = "mcg_yearlyhouseholdincome";
 
         // Household fields
         private const string FLD_CH_Case = "mcg_case";
@@ -75,10 +88,14 @@ namespace JsonWorkflowEngineRule
         private const string FLD_CH_DateExited = "mcg_dateexited";
         private const string FLD_CH_Primary = "mcg_primary";
         private const string FLD_CH_StateCode = "statecode";
+        private const string FLD_CH_Relationship = "mcg_relationship";
+        private const string FLD_CH_RelationshipRole = "mcg_relationshiprole";
 
         // Case Income fields
         private const string FLD_CI_Case = "mcg_case";
         private const string FLD_CI_ApplicableIncome = "mcg_applicableincome"; // income applicable
+        private const string FLD_CI_IncomeCategory = "mcg_incomecategory";
+        private const string FLD_CI_IncomeSubCategory = "mcg_incomesubcategory";
 
         // Expense uses same logical name for applicable flag (your update)
         private const string FLD_Common_Case = "mcg_case";
@@ -97,6 +114,108 @@ namespace JsonWorkflowEngineRule
         // Case Address fields
         private const string FLD_CA_Case = "mcg_case";
         private const string FLD_CA_EndDate = "mcg_enddate";
+
+        //Eligibility Income Range fields
+        private const string FLD_EIR_HouseHoldSize = "mcg_householdsize";
+        private const string FLD_EIR_MinIncome = "mcg_minincome";
+        private const string FLD_EIR_MaxIncome = "mcg_maxincome";
+        private const string FLD_EIR_EligibilityAdmin = "mcg_eligibilityadmin";
+
+        //EligibiliyAdmin
+        private const string FLD_EA_Name = "mcg_name";
+
+        //Case Already receiving State CCS benefits field
+        private const string FLD_Case_StateCCSFlag = "mcg_alreadyreceivingstateccsbenefits";
+
+        //Case Expense Table
+        private const string FLD_CE_ExpenseType = "mcg_type";
+        private const string FLD_CE_Amount = "mcg_amount";
+
+        //Case Involved Parties Fields
+        private const string FLD_CIP_CaseRelationShip = "mcg_caserelationship";
+        private const string FLD_CIP_CaseId = "mcg_incident";
+
+        //Relationship role entity
+        private const string FLD_RR_RRID = "mcg_relationshiproleid";
+        private const string FLD_RR_Name = "mcg_name";
+
+        //Enum Expense Type
+        public enum CaseExpenseType
+        {
+            MedicalBills = 861450021,
+            MedicalPremiumExcludingMedicare = 861450022,
+            MedicarePremium = 861450023
+        }
+
+        //Enum RelationType Type
+        public enum HouseholdRelationship
+        {
+            SpouseOrPartner = 861450037
+        }
+
+        //Enum Involved Parties Case Relationship Choice
+        public enum InvolvedPartiesRelationship
+        {
+            SpouseOrPartner = 861450037,
+            OtherParent = 861450007,
+            Parent = 861450025,
+            OtherFamilyMember = 861450039
+        }
+
+        //Enum MaritalStatus
+        public enum ContactMaritalStatus
+        {
+            Single = 1,
+            Divorced = 3,
+            Separated = 861450003,
+            SingleOrNeverMarried = 861450000
+        }
+
+        //Enum Income Category from Case income entity
+        public enum CaseIncomeCatergory
+        {
+            EarningsOrWages = 861450000,
+            Military = 861450001,
+            PublicBenefits = 861450002,
+            Other = 861450004
+        }
+
+
+        //Enum Income Sub Category from Case income entity
+        public enum CaseIncomeSubCatergory
+        {
+            ChildSupport = 861450045
+        }
+
+        //Enum Case Entity State CCS choice column
+        public enum CaseStateCCS
+        {
+            Yes = 568020000,
+            NO = 568020001
+        }
+
+        //Static Relationship lookup
+        public static class CaseRelationShipLookup
+        {
+            public const string SpouseOrPartner = "Spouse/Partner";
+            public const string DomesticPartner = "Domestic Partner";
+        }
+
+        //Static DocumentCategory Type
+        public static class DocumentCategory
+        {
+            public const string Income = "Income";
+            public const string Expenses = "Expenses";
+        }
+
+        //Static DocumentSubCategory Type
+        public static class DocumentSubCategory
+        {
+            public const string Paystub = "Paystub";
+            public const string W2 = "W-2";
+            public const string Expense = "Expense";
+            public const string ChildSupport = "Child Support";
+        }
 
         // ===== WPA Rule #2: Contact Association fields =====
         private const string FLD_REL_Contact = "mcg_contactid";
@@ -242,7 +361,7 @@ namespace JsonWorkflowEngineRule
                         validationFailures.Add("No active Case Household members found (Date Exited is blank).");
 
                     // Validation #2: ANY Case Income row exists (per your change)
-                    var hasAnyIncome = HasAnyCaseIncome(service, tracing, caseRef.Id);
+                    var hasAnyIncome = HasAnyCaseIncome(service, tracing, caseRef.Id, null, null);
                     if (!hasAnyIncome)
                         validationFailures.Add("Case Income – No case income record found.");
 
@@ -267,6 +386,12 @@ namespace JsonWorkflowEngineRule
 
                         if (!HasDocumentByCategorySubcategory(service, tracing, caseRef.Id, primaryContactRef.Id, "Income", "Tax Returns"))
                             validationFailures.Add("Most recent income tax return document is missing.");
+                    }
+                    // Has Already receiving the State CCS check
+                    var stateCcsMessage = HasAlreadyReceivingStateCCS(service, tracing, caseRef.Id);
+                    if (!string.IsNullOrWhiteSpace(stateCcsMessage))
+                    {
+                        validationFailures.Add(stateCcsMessage);
                     }
                 }
 
@@ -302,6 +427,18 @@ namespace JsonWorkflowEngineRule
                 {
                     // Rule 1 token population (income + expense; asset ignored)
                     PopulateRule1Tokens(service, tracing, caseRef.Id, tokens);
+
+                    //Rule 7 token population (Yeary income)
+                    PopulateRule7Tokens(context, service, tracing, caseRef.Id, tokens);
+
+                    //Rule 8 token population (Child support, court ordered or voluntary child support?)
+                    PopulateRule8Tokens(context, service, tracing, caseRef.Id, tokens);
+
+                    //Rule 9 token population (Medical expense > 2500)
+                    PopulateRule9Tokens(context, service, tracing, caseRef.Id, tokens);
+
+                    //Rule 10 token population (Single-parent family)
+                    PopulateRule10Tokens(context, service, tracing, caseRef.Id, tokens);
 
                     // ===== Rule 2 token population (WPA Activity) =====
                     // beneficiary is recipientRef (mcg_recipientcontact)
@@ -404,7 +541,7 @@ namespace JsonWorkflowEngineRule
 
         #region ====== VALIDATIONS ======
 
-        private static bool HasAnyCaseIncome(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        private static bool HasAnyCaseIncome(IOrganizationService svc, ITracingService tracing, Guid caseId, CaseIncomeCatergory[] caseIncomeCategories, CaseIncomeSubCatergory[] caseIncomeSubCategories)
         {
             var qe = new QueryExpression(ENT_CaseIncome)
             {
@@ -413,6 +550,33 @@ namespace JsonWorkflowEngineRule
             };
 
             qe.Criteria.AddCondition(FLD_CI_Case, ConditionOperator.Equal, caseId);
+
+            bool hasCategories = caseIncomeCategories?.Any() == true;
+            bool hasSubCategories = caseIncomeSubCategories?.Any() == true;
+
+            if (hasCategories && hasSubCategories)
+            {
+                var dependentFilter = new FilterExpression(LogicalOperator.And);
+
+                dependentFilter.AddCondition(
+                    FLD_CI_IncomeCategory,
+                    ConditionOperator.In,
+                    caseIncomeCategories.Select(c => (object)(int)c).ToArray());
+
+                dependentFilter.AddCondition(
+                    FLD_CI_IncomeSubCategory,
+                    ConditionOperator.In,
+                    caseIncomeSubCategories.Select(sc => (object)(int)sc).ToArray());
+
+                qe.Criteria.AddFilter(dependentFilter);
+
+                tracing.Trace("Applied IncomeCategory and IncomeSubCategory filters");
+            }
+            else
+            {
+                tracing.Trace("No IncomeCategory and SubCategory filters applied");
+            }
+
 
             var found = svc.RetrieveMultiple(qe).Entities.Any();
             tracing.Trace($"HasAnyCaseIncome(caseId={caseId}) = {found}");
@@ -499,7 +663,120 @@ namespace JsonWorkflowEngineRule
             }
         }
 
-        private static bool HasDocumentByCategorySubcategory(IOrganizationService svc, ITracingService tracing, Guid caseId, Guid contactId, string category, string subCategory)
+        private static string HasAlreadyReceivingStateCCS(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            var qe = new QueryExpression(ENT_Case)
+            {
+                ColumnSet = new ColumnSet(FLD_Case_StateCCSFlag, "statecode"),
+                TopCount = 1
+            };
+
+            qe.Criteria.AddCondition(FLD_CASE_IncidentId, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+
+            var entity = svc.RetrieveMultiple(qe).Entities.FirstOrDefault();
+
+            if (entity == null)
+            {
+                tracing.Trace("Case not found");
+                return string.Empty;
+            }
+
+            if (!entity.Attributes.Contains(FLD_Case_StateCCSFlag))
+            {
+                tracing.Trace("CaseStateCCS is NULL");
+                return "Please fill Already receiving State CCS benefits question in case form";
+            }
+
+            var stateCcs = entity.GetAttributeValue<OptionSetValue>(FLD_Case_StateCCSFlag)?.Value;
+
+            if (stateCcs == (int)CaseStateCCS.Yes)
+            {
+                tracing.Trace("CaseStateCCS = Yes");
+                return "You are already receiving the benefit from the State CCS";
+            }
+
+            tracing.Trace("CaseStateCCS is present but not Yes");
+            return string.Empty;
+        }
+
+        private static bool CheckMaritalStatusAllowedFromCaseContact(IOrganizationService svc, ITracingService tracing, Guid caseId, params ContactMaritalStatus[] maritalStatus)
+        {
+            tracing.Trace("CheckMaritalStatusAllowedFromCase method start");
+
+            Entity caseRecord = svc.Retrieve(
+                ENT_Case,
+                caseId,
+                new ColumnSet(FLD_CASE_PrimaryContact));
+
+            EntityReference primaryContactRef = caseRecord.GetAttributeValue<EntityReference>(FLD_CASE_PrimaryContact);
+
+            bool isMaritalStatus = false;
+
+            if (primaryContactRef == null)
+            {
+                tracing.Trace("Primary contact is missing on the Case.");
+            }
+            else
+            {
+                Entity contact = svc.Retrieve(
+                    ENT_ContactTableName,
+                    primaryContactRef.Id,
+                    new ColumnSet(FLD_Con_MaritalStatus));
+
+                OptionSetValue maritalStatusValue =
+                    contact.GetAttributeValue<OptionSetValue>(FLD_Con_MaritalStatus);
+
+                if (maritalStatusValue != null &&
+                    maritalStatus
+                        .Select(ms => (int)ms)
+                        .Contains(maritalStatusValue.Value))
+                {
+                    isMaritalStatus = true;
+                }
+
+                tracing.Trace($"Marital status allowed: {isMaritalStatus}");
+            }
+
+            tracing.Trace("CheckMaritalStatusAllowedFromCase method end");
+            return isMaritalStatus;
+        }
+
+        private static List<Entity> CheckCaseInvolvedParties(IOrganizationService svc, ITracingService tracing, Guid caseId, InvolvedPartiesRelationship[] caseRelationship)
+        {
+            tracing.Trace($"CheckCaseInvolvedParties Method is called");
+            var qe = new QueryExpression(ENT_CaseInvolvedParties)
+            {
+                ColumnSet = new ColumnSet(
+                    FLD_CIP_CaseRelationShip, FLD_CIP_CaseId
+                )
+            };
+
+            qe.Criteria.AddCondition(FLD_CIP_CaseId, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_CH_StateCode, ConditionOperator.Equal, 0);
+            if (caseRelationship != null && caseRelationship.Length > 0)
+            {
+                qe.Criteria.AddCondition(
+                   FLD_CIP_CaseRelationShip,
+                   ConditionOperator.In,
+                   caseRelationship.Select(r => (object)(int)r).ToArray()
+               );
+            }
+
+            var results = svc.RetrieveMultiple(qe).Entities.ToList();
+            tracing.Trace($"CheckCaseInvolvedParties count: {results.Count}");
+            tracing.Trace($"CheckCaseInvolvedParties Method is end");
+            return results;
+
+        }
+
+        private static bool HasDocumentByCategorySubcategory(
+    IOrganizationService svc,
+    ITracingService tracing,
+    Guid caseId,
+    Guid? contactId,
+    string category,
+    string subCategory)
         {
             var qe = new QueryExpression(ENT_UploadDocument)
             {
@@ -508,13 +785,25 @@ namespace JsonWorkflowEngineRule
             };
 
             qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
-            qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, contactId);
+
+            // ✅ FIX: Only filter by contact when contactId is provided
+            if (contactId.HasValue && contactId.Value != Guid.Empty)
+            {
+                qe.Criteria.AddCondition(FLD_DOC_Contact, ConditionOperator.Equal, contactId.Value);
+            }
+            else
+            {
+                // contactId null means: "any contact" (don’t apply a contact filter)
+                tracing.Trace("HasDocumentByCategorySubcategory: contactId is null/empty => not filtering by contact (ANY contact).");
+            }
+
             qe.Criteria.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, category);
             qe.Criteria.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, subCategory);
             qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
 
             var found = svc.RetrieveMultiple(qe).Entities.Any();
-            tracing.Trace($"HasDocumentByCategorySubcategory(case={caseId}, contact={contactId}, {category}/{subCategory}) = {found}");
+            var contactText = (contactId.HasValue && contactId.Value != Guid.Empty) ? contactId.Value.ToString() : "ANY";
+            tracing.Trace($"HasDocumentByCategorySubcategory(case={caseId}, contact={contactText}, {category}/{subCategory}) = {found}");
             return found;
         }
 
@@ -930,6 +1219,472 @@ namespace JsonWorkflowEngineRule
             return found;
         }
 
+        #endregion
+
+        #region ====== Rule 7 token population (State CCS Eibility) ======
+        //Rule 7 token population (State CCS Eibility)
+        private static void PopulateRule7Tokens(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId, Dictionary<string, object> tokens)
+        {
+            tracing.Trace($"PopulateRule2Tokens Method is called");
+            tokens["yearlyincome"] = YearlyHouseHoldIncome(svc, tracing, caseId);
+            tokens["householdsizeadjusted"] = CountHouseHoldSize(svc, tracing, caseId);
+            tokens["incomewithinrange"] = HasCheckEligibleIncomeRange(context, svc, tracing, caseId);
+            //tokens["incomebelowminc"] = HasCheckBelowMinIncome(svc, tracing, caseId);
+
+            tracing.Trace($"Rule7 Tokens => yearlyincome={tokens["yearlyincome"]}, householdsizeadjusted={tokens["householdsizeadjusted"]}, , incomewithinrange={tokens["incomewithinrange"]}");
+            tracing.Trace($"PopulateRule2Tokens Method is end");
+        }
+
+        private static decimal YearlyHouseHoldIncome(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            tracing.Trace($"YearlyHouseHoldIncome Method is called");
+            var qe = new QueryExpression(ENT_Case)
+            {
+                ColumnSet = new ColumnSet(FLD_CASE_YearlyHouseholdIncome, "statecode"),
+                TopCount = 50
+            };
+
+            qe.Criteria.AddCondition(FLD_CASE_IncidentId, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+
+
+            var caseEntity = svc.RetrieveMultiple(qe).Entities.FirstOrDefault();
+
+            if (caseEntity == null || !caseEntity.Contains(FLD_CASE_YearlyHouseholdIncome))
+            {
+                tracing.Trace("YearlyHouseHoldIncome: No value found, returning 0");
+                tracing.Trace($"YearlyHouseHoldIncome Method is end");
+                return 0;
+            }
+
+            var money = caseEntity.GetAttributeValue<Money>(FLD_CASE_YearlyHouseholdIncome);
+            var value = money?.Value ?? 0;
+
+            tracing.Trace($"YearlyHouseHoldIncome(caseId={caseId}) = {value}");
+            tracing.Trace($"YearlyHouseHoldIncome Method is end");
+            return value;
+        }
+
+        private static decimal CountHouseHoldSize(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            tracing.Trace($"CountHouseHoldSize Method is called");
+
+            var houseHoldSize = GetActiveHouseholdCount(svc, tracing, caseId);
+
+            var filteredHousehold = houseHoldSize
+                    .Where(e =>
+                        e.Contains(FLD_CH_DateEntered) &&
+                        (
+                            !e.Contains(FLD_CH_DateExited)
+                            || (
+                                e.GetAttributeValue<DateTime>(FLD_CH_DateEntered).Day !=
+                                e.GetAttributeValue<DateTime>(FLD_CH_DateExited).Day
+                                ||
+                                e.GetAttributeValue<DateTime>(FLD_CH_DateEntered).Month !=
+                                e.GetAttributeValue<DateTime>(FLD_CH_DateExited).Month
+                            )
+                        )
+                    )
+                    .ToList();
+
+            tracing.Trace($"CountHouseHoldSize is: {filteredHousehold.Count} ");
+            tracing.Trace($"CountHouseHoldSize Method is end");
+            return filteredHousehold.Count;
+        }
+
+        private static bool HasCheckEligibleIncomeRange(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            tracing.Trace("HasCheckEligibleIncomeRange method is started");
+
+            var yearlyHouseHoldIncome = YearlyHouseHoldIncome(svc, tracing, caseId);
+            tracing.Trace($"Yearly House Hold Income = {yearlyHouseHoldIncome}");
+
+            var caseHouseHoldSize = CountHouseHoldSize(svc, tracing, caseId);
+            tracing.Trace($"Case Household Size = {caseHouseHoldSize}");
+
+            var bliId = GetGuidFromInput(context, IN_CaseBenefitLineItemId);
+
+            var bli = svc.Retrieve(
+                ENT_BenefitLineItem,
+                bliId,
+                new ColumnSet(FLD_BLI_Benefit)
+            );
+
+            var serviceBenefitRef = bli.GetAttributeValue<EntityReference>(FLD_BLI_Benefit);
+
+            if (serviceBenefitRef == null || string.IsNullOrWhiteSpace(serviceBenefitRef.Name))
+            {
+                tracing.Trace("Service Benefit Name is NULL or empty");
+                return false;
+            }
+
+            var serviceBenefitName = serviceBenefitRef.Name;
+            tracing.Trace($"Service Benefit Name = {serviceBenefitName}");
+
+            //  Get eligibility admin by name
+            var eaQuery = new QueryExpression(ENT_EligibilityAdmin)
+            {
+                ColumnSet = new ColumnSet(FLD_EA_Name),
+                TopCount = 1
+            };
+
+            eaQuery.Criteria.AddCondition(
+                FLD_EA_Name,
+                ConditionOperator.Equal,
+                serviceBenefitName
+            );
+
+            var eligibilityAdmin =
+                svc.RetrieveMultiple(eaQuery).Entities.FirstOrDefault();
+
+            if (eligibilityAdmin == null)
+            {
+                tracing.Trace("No Eligibility Admin record found");
+                return false;
+            }
+
+            var eligibilityAdminId = eligibilityAdmin.Id;
+            tracing.Trace($"Eligibility Admin Id = {eligibilityAdminId}");
+
+            // Get eligibility income range 
+            var rangeQuery = new QueryExpression(ENT_EligibilityIncomeRange)
+            {
+                ColumnSet = new ColumnSet(
+                    FLD_EIR_HouseHoldSize,
+                    FLD_EIR_MinIncome,
+                    ENT_SubsidyTableName
+                )
+            };
+
+            rangeQuery.Criteria.AddCondition(
+                FLD_EIR_EligibilityAdmin,
+                ConditionOperator.Equal,
+                eligibilityAdminId
+            );
+
+            rangeQuery.Criteria.AddCondition(
+             ENT_SubsidyTableName,
+            ConditionOperator.Equal,
+            "c"
+            );
+
+            var ranges = svc.RetrieveMultiple(rangeQuery).Entities;
+
+            if (!ranges.Any())
+            {
+                tracing.Trace("No Eligibility Income Range records found");
+                return false;
+            }
+
+            tracing.Trace($"Total Income Range Records = {ranges.Count}");
+
+            // Match household size & income
+            var matchedRanges = ranges
+                .Where(r =>
+                    r.Contains(FLD_EIR_HouseHoldSize) &&
+                    r.GetAttributeValue<int>(FLD_EIR_HouseHoldSize) == caseHouseHoldSize &&
+                    string.Equals(r.GetAttributeValue<string>(ENT_SubsidyTableName)?.Trim() ?? "", "c",
+                     StringComparison.OrdinalIgnoreCase
+                     )
+                )
+                .ToList();
+
+            if (!matchedRanges.Any())
+            {
+                tracing.Trace("No income range matched for Household Size");
+                return false;
+            }
+
+            tracing.Trace($"Matched income range count = {matchedRanges.Count}");
+
+            foreach (var range in matchedRanges)
+            {
+                var minIncomeMoney =
+                    range.GetAttributeValue<Money>(FLD_EIR_MinIncome);
+
+                var minIncome = minIncomeMoney?.Value ?? 0;
+
+                tracing.Trace($"Comparing yearlyHouseHoldIncome={yearlyHouseHoldIncome} with MinIncome={minIncome}");
+                // not eligible
+                if (yearlyHouseHoldIncome >= minIncome)
+                {
+                    tracing.Trace(
+                        "Yearly Eligible Income >= MinIncome : NOT ELIGIBLE");
+                    return false;
+                }
+            }
+            bool incomePayStubPresent = HasDocumentByCategorySubcategory(svc, tracing, caseId, null, DocumentCategory.Income, DocumentSubCategory.Paystub);
+            bool incomeW2FPresent = HasDocumentByCategorySubcategory(svc, tracing, caseId, null, DocumentCategory.Income, DocumentSubCategory.W2);
+            var finalResult = incomePayStubPresent && incomeW2FPresent;
+            tracing.Trace($"incomePayStubPresent = {incomePayStubPresent}");
+            tracing.Trace($"incomeW2FPresent = {incomeW2FPresent}");
+            // eligible
+            tracing.Trace("Yearly Eligible Income < MinIncome : ELIGIBLE");
+            tracing.Trace("HasCheckEligibleIncomeRange method is end");
+
+            return finalResult;
+        }
+
+        #endregion
+
+        #region ====== Rule 8 token population (Child support, court ordered or voluntary child support) ======
+        private static void PopulateRule8Tokens(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId, Dictionary<string, object> tokens)
+        {
+            tracing.Trace($"PopulateRule8Tokens Method is called");
+            //tokens["pursuingchildsupportorgoodcause"] = ValidateChildSupport(svc, tracing, caseId);
+            tokens["ncpexists"] = CheckNcpExistsForChild(svc, tracing, caseId);
+            tokens["ncppayschildsupport"] = ValidateChildSupport(svc, tracing, caseId);
+
+            tokens["ncpexists"] = CheckNcpExistsForChild(svc, tracing, caseId);
+            tokens["otheradultpartnerorspouse"] = GetActiveHouseholdCount(svc, tracing, caseId, CaseRelationShipLookup.SpouseOrPartner).Any();
+
+            tokens["ncpexists"] = CheckNcpExistsForChild(svc, tracing, caseId);
+            tokens["issingleparent"] = CheckMaritalStatusAllowedFromCaseContact(
+              svc,
+              tracing,
+              caseId,
+              ContactMaritalStatus.SingleOrNeverMarried,
+              ContactMaritalStatus.Divorced,
+              ContactMaritalStatus.Separated
+            );
+
+            tracing.Trace($"Rule8 Tokens completed");
+            tracing.Trace($"PopulateRule8Tokens Method is end");
+        }
+
+        private static bool CheckNcpExistsForChild(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            tracing.Trace("CheckNcpExistsForChild check started");
+            var caseRelationship = new List<InvolvedPartiesRelationship>
+                {
+                    InvolvedPartiesRelationship.SpouseOrPartner,
+                    InvolvedPartiesRelationship.OtherParent,
+                    InvolvedPartiesRelationship.Parent,
+                    InvolvedPartiesRelationship.OtherFamilyMember
+                };
+            var caseInvolvedPartRecord = CheckCaseInvolvedParties(svc, tracing, caseId, caseRelationship.ToArray());
+            bool isInvolvedPartiesPresent = caseInvolvedPartRecord.Any();
+
+            var houseHoldNcpRecord = GetHouseHoldNcpMembers(svc, tracing, caseId, CaseRelationShipLookup.SpouseOrPartner);
+            bool isCaseHouseHoldNcpPresent = houseHoldNcpRecord.Any();
+
+            tracing.Trace($"caseInvolvedPartCheck {isInvolvedPartiesPresent}");
+            tracing.Trace($"isActiveCaseHouseHoldPresent {isCaseHouseHoldNcpPresent}");
+
+            tracing.Trace("CheckNcpExistsForChild check ended");
+            return isInvolvedPartiesPresent || isCaseHouseHoldNcpPresent;
+        }
+        private static bool ValidateChildSupport(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            bool isChildCaseIncomePresent = HasAnyCaseIncome(svc, tracing, caseId, new[] { CaseIncomeCatergory.Other }, new[] { CaseIncomeSubCatergory.ChildSupport });
+            tracing.Trace($"isChildCaseIncomePresent{isChildCaseIncomePresent}");
+            bool hasChildSupportDocPresent = HasDocumentByCategorySubcategory(svc, tracing, caseId, null, DocumentCategory.Expenses, DocumentSubCategory.ChildSupport);
+            tracing.Trace($"hasChildSupportDocPresent{hasChildSupportDocPresent}");
+            return hasChildSupportDocPresent && isChildCaseIncomePresent;
+        }
+        #endregion
+
+        #region ====== Rule 9 token population (Medical Expense calculation) ======
+        //Rule 9 token population (Medical Expense >= 2500)
+        private static void PopulateRule9Tokens(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId, Dictionary<string, object> tokens)
+        {
+            tracing.Trace($"PopulateRule9Tokens Method is called");
+            tokens["medicalbillsamount"] = CalculateMedicalExpense(svc, tracing, caseId);
+            tokens["medicalbillexists"] = HasDocumentByCategorySubcategory(svc, tracing, caseId, null, DocumentCategory.Expenses, DocumentSubCategory.Expense);
+
+            tracing.Trace($"Rule9 Tokens => medicalbillsamount={tokens["medicalbillsamount"]}");
+            tracing.Trace($"PopulateRule9Tokens Method is end");
+        }
+
+        private static decimal CalculateMedicalExpense(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            tracing.Trace("CalculateMedicalExpense method started");
+
+            decimal totalAmount = 0;
+
+            var qe = new QueryExpression(ENT_CaseExpense)
+            {
+                ColumnSet = new ColumnSet(FLD_CE_ExpenseType, FLD_CE_Amount),
+                Criteria = new FilterExpression(LogicalOperator.And)
+                {
+                    Conditions =
+            {
+                new ConditionExpression(FLD_Common_Case, ConditionOperator.Equal, caseId),
+                new ConditionExpression("statecode", ConditionOperator.Equal, 0),
+                new ConditionExpression(
+                    FLD_CE_ExpenseType,
+                    ConditionOperator.In,
+                    new object[]
+                    {
+                        (int)CaseExpenseType.MedicalBills,
+                        (int)CaseExpenseType.MedicalPremiumExcludingMedicare,
+                        (int)CaseExpenseType.MedicarePremium
+                    })
+            }
+                }
+            };
+
+            var expenses = svc.RetrieveMultiple(qe)?.Entities;
+
+            if (expenses == null || expenses.Count == 0)
+            {
+                tracing.Trace("No medical expense records found");
+                return 0;
+            }
+
+            foreach (var expense in expenses)
+            {
+                var money = expense.GetAttributeValue<Money>(FLD_CE_Amount);
+                if (money != null)
+                {
+                    totalAmount += money.Value;
+                }
+            }
+            ;
+
+            tracing.Trace($"Total Medical Expense (caseId={caseId}) = {totalAmount}");
+            tracing.Trace("CalculateMedicalExpense method ended");
+
+            return totalAmount;
+        }
+        #endregion
+
+        #region ====== Rule 10 token population(Medical Expense calculation) ======
+        //Rule 10 token population (single-parent household or has an absent parent)
+        private static void PopulateRule10Tokens(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId, Dictionary<string, object> tokens)
+        {
+            tracing.Trace($"PopulateRule10Tokens Method is called");
+            tokens["singleparentfamily"] = CheckHouseHoldPartnerAndMaritalStatus(svc, tracing, caseId);
+            tokens["childsupportdocumentprovided"] = HasDocumentByCategorySubcategory(svc, tracing, caseId, null, DocumentCategory.Expenses, DocumentSubCategory.ChildSupport);
+
+            tracing.Trace($"Rule10 Tokens => singleparentfamily={tokens["singleparentfamily"]},childsupportdocumentprovided={tokens["childsupportdocumentprovided"]}");
+            tracing.Trace($"PopulateRule10Tokens Method is end");
+        }
+
+
+        private static bool CheckHouseHoldPartnerAndMaritalStatus(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        {
+            tracing.Trace("CheckHouseHoldPartnerAndMaritalStatus check started");
+
+            bool hasHouseholdPartner = GetActiveHouseholdCount(
+                svc,
+                tracing,
+                caseId,
+                CaseRelationShipLookup.SpouseOrPartner,
+                CaseRelationShipLookup.DomesticPartner
+            ).Any();
+
+            tracing.Trace($"Household partner exists: {hasHouseholdPartner}");
+
+            bool validateMaritalStatus = CheckMaritalStatusAllowedFromCaseContact(
+              svc,
+              tracing,
+              caseId,
+              ContactMaritalStatus.Single,
+              ContactMaritalStatus.Divorced,
+              ContactMaritalStatus.Separated
+          );
+
+            // returning a single bool value
+            bool result = hasHouseholdPartner && validateMaritalStatus;
+
+            tracing.Trace($"CheckHouseHoldPartnerAndMaritalStatus final result: {result}");
+            tracing.Trace("CheckHouseHoldPartnerAndMaritalStatus method end");
+            return result;
+        }
+
+
+        #endregion
+
+        #region ====== Household ======
+        private static List<Entity> GetActiveHouseholdCount(IOrganizationService svc, ITracingService tracing, Guid caseId, params string[] relationships)
+        {
+            tracing.Trace($"GetActiveHouseholdCount Method is called");
+            var qe = new QueryExpression(ENT_CaseHousehold)
+            {
+                ColumnSet = new ColumnSet(
+                    FLD_CH_Contact, FLD_CH_DateEntered, FLD_CH_DateExited, FLD_CH_Primary, FLD_CH_StateCode, FLD_CH_RelationshipRole
+                )
+            };
+
+            qe.Criteria.AddCondition(FLD_CH_Case, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_CH_StateCode, ConditionOperator.Equal, 0);
+            //qe.Criteria.AddCondition(FLD_CH_DateExited, ConditionOperator.Null);
+
+            if (relationships != null && relationships.Length > 0)
+            {
+                var roleLink = qe.AddLink(
+                    ENT_RelationshipRole,     // target table
+                    FLD_CH_RelationshipRole,     // lookup field in CaseHousehold
+                    FLD_RR_RRID,   // PK of target
+                    JoinOperator.Inner
+                );
+
+                roleLink.EntityAlias = "rr";
+
+                roleLink.LinkCriteria.AddCondition(
+                    FLD_RR_Name,
+                    ConditionOperator.In,
+                    relationships.Cast<object>().ToArray()
+                );
+            }
+
+            var results = svc.RetrieveMultiple(qe).Entities.ToList();
+            tracing.Trace($"GetActiveHouseholdCount count: {results.Count}");
+            tracing.Trace($"GetActiveHouseholdCount Method is end");
+            return results;
+        }
+
+        //Helper method for Household NCP check
+        private static List<Entity> GetHouseHoldNcpMembers(IOrganizationService svc, ITracingService tracing, Guid caseId, params string[] relationships)
+        {
+            tracing.Trace($"GetHouseHoldNcpMembers Method is called");
+            var qe = new QueryExpression(ENT_CaseHousehold)
+            {
+                ColumnSet = new ColumnSet(
+                    FLD_CH_Contact, FLD_CH_DateEntered, FLD_CH_DateExited, FLD_CH_Primary, FLD_CH_StateCode, FLD_CH_RelationshipRole
+                )
+            };
+
+            qe.Criteria.AddCondition(FLD_CH_Case, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_CH_StateCode, ConditionOperator.Equal, 0);
+            qe.Criteria.AddCondition(FLD_CH_DateExited, ConditionOperator.NotNull);
+
+            if (relationships != null && relationships.Length > 0)
+            {
+                var roleLink = qe.AddLink(
+                    ENT_RelationshipRole,     // target table
+                    FLD_CH_RelationshipRole,     // lookup field in CaseHousehold
+                    FLD_RR_RRID,   // PK of target
+                    JoinOperator.Inner
+                );
+
+                roleLink.EntityAlias = "rr";
+
+                roleLink.LinkCriteria.AddCondition(
+                    FLD_RR_Name,
+                    ConditionOperator.In,
+                    relationships.Cast<object>().ToArray()
+                );
+            }
+
+            var results = svc.RetrieveMultiple(qe).Entities;
+
+            var matchedRecords = results
+                .Where(e =>
+                    e.Contains(FLD_CH_DateEntered) &&
+                    e.Contains(FLD_CH_DateExited) &&
+                    e.GetAttributeValue<DateTime>(FLD_CH_DateEntered).Day ==
+                    e.GetAttributeValue<DateTime>(FLD_CH_DateExited).Day &&
+                    e.GetAttributeValue<DateTime>(FLD_CH_DateEntered).Month ==
+                    e.GetAttributeValue<DateTime>(FLD_CH_DateExited).Month
+                )
+                .ToList();
+
+            tracing.Trace($"GetHouseHoldNcpMembers count: {results.Count}");
+            tracing.Trace($"GetHouseHoldNcpMembers Method is end");
+            return matchedRecords;
+        }
         #endregion
 
         #region ====== Rule 2 token population (WPA Activity Hours) ======
