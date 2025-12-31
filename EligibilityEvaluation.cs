@@ -121,6 +121,7 @@ namespace JsonWorkflowEngineRule
         private const string TOKEN_Parent2ActivityHours = "parent2activityhoursperweek";
         private const string TOKEN_ParentsTotalActivityHours = "totalactivityhoursperweek";
         private const string TOKEN_ProofIdentityProvided = "proofidentityprovided";
+        private const string TOKEN_MostRecentTaxReturnProvided = "mostrecenttaxreturnprovided";
 
 
         #endregion
@@ -315,6 +316,9 @@ namespace JsonWorkflowEngineRule
 
                         // ===== Rule 5 token population (Proof of Residency) =====
                         PopulateRule5Tokens_ProofOfResidency(service, tracing, caseRef.Id, tokens, facts);
+
+                        // ===== Rule 6 token population (Most recent income tax return) =====
+                        PopulateRule6Tokens_MostRecentIncomeTaxReturn(service, tracing, caseRef.Id, tokens, facts);
 
                     }
                 }
@@ -759,6 +763,90 @@ namespace JsonWorkflowEngineRule
                 facts["rule5.docs.matchedDocInfo"] = "";
             }
         }
+
+        private static void PopulateRule6Tokens_MostRecentIncomeTaxReturn(
+    IOrganizationService svc,
+    ITracingService tracing,
+    Guid caseId,
+    Dictionary<string, object> tokens,
+    Dictionary<string, object> facts)
+        {
+            try
+            {
+                // Token used in your rule JSON
+                const string TOKEN_Local = "mostrecenttaxreturnprovided";
+
+                // We only need "attached" docs (not verified requirement as per Rule 6 text)
+                // Category/SubCategory are TEXT fields
+                var allowedCategory = "Income";
+
+                var allowedSubCats = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "W-2",
+            "Tax Returns",
+            "Paystub",
+            "Bank Statement",
+            "Pay Stubs",        // safety: if someone saved label differently
+            "Paystub(s)"        // safety
+        };
+
+                var qe = new QueryExpression(ENT_UploadDocument)
+                {
+                    ColumnSet = new ColumnSet(FLD_DOC_Category, FLD_DOC_SubCategory, FLD_DOC_Contact, "createdon"),
+                    Criteria = new FilterExpression(LogicalOperator.And),
+                    TopCount = 200
+                };
+
+                qe.Criteria.AddCondition(FLD_DOC_Case, ConditionOperator.Equal, caseId);
+                qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
+                qe.Criteria.AddCondition(FLD_DOC_Category, ConditionOperator.Equal, allowedCategory);
+
+                // subcategory OR filter
+                var subOr = new FilterExpression(LogicalOperator.Or);
+                foreach (var s in allowedSubCats)
+                    subOr.AddCondition(FLD_DOC_SubCategory, ConditionOperator.Equal, s);
+                qe.Criteria.AddFilter(subOr);
+
+                // latest first (nice for facts)
+                qe.Orders.Add(new OrderExpression("createdon", OrderType.Descending));
+
+                var docs = svc.RetrieveMultiple(qe).Entities;
+                var match = docs.FirstOrDefault();
+
+                bool pass = (match != null);
+
+                tokens[TOKEN_Local] = pass;
+
+                // facts for UI/debug
+                facts["rule6.docs.countMatched"] = docs.Count;
+                if (pass)
+                {
+                    var cat = (match.GetAttributeValue<string>(FLD_DOC_Category) ?? "").Trim();
+                    var sub = (match.GetAttributeValue<string>(FLD_DOC_SubCategory) ?? "").Trim();
+
+                    var cRef = match.GetAttributeValue<EntityReference>(FLD_DOC_Contact);
+                    var who = (cRef != null && cRef.Id != Guid.Empty)
+                        ? (TryGetContactFullName(svc, tracing, cRef.Id) ?? cRef.Id.ToString())
+                        : "N/A";
+
+                    facts["rule6.docs.matchedDocInfo"] = $"{cat} / {sub} - Contact: {who}";
+                }
+                else
+                {
+                    facts["rule6.docs.matchedDocInfo"] = "";
+                }
+
+                tracing.Trace($"[Rule6] mostrecenttaxreturnprovided={pass}; matchedRows={docs.Count}; info='{facts["rule6.docs.matchedDocInfo"]}'");
+            }
+            catch (Exception ex)
+            {
+                tracing.Trace("[Rule6] PopulateRule6Tokens_MostRecentIncomeTaxReturn failed: " + ex);
+                tokens["mostrecenttaxreturnprovided"] = false;
+                facts["rule6.docs.countMatched"] = 0;
+                facts["rule6.docs.matchedDocInfo"] = "";
+            }
+        }
+
 
 
 
@@ -1259,7 +1347,11 @@ namespace JsonWorkflowEngineRule
                 case "householdsizeadjusted": return "Household size (adjusted)";
                 case "incomecategory": return "Income category (State A-J / C / D)";
                 case "incomewithinrange": return "Income within eligible range";
-                case "incomebelowminc": return "Income below C minimum";
+                case "ncpexists": return "NCP Exists?";
+                case "ncppayschildsupport": return "NCP Pay for Child Support?";
+                case "otheradultpartnerorspouse": return "Any Adult Present?";
+                case "issingleparent": return "Is a Single Parent?";
+                case "medicalbillexists": return "Medical Bill Exists?";
                 default: return token;
             }
         }
