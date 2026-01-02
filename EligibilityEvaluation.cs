@@ -463,7 +463,8 @@ namespace JsonWorkflowEngineRule
                 }
 
                 var evalLines = new List<EvalLine>();
-                bool overall = EvaluateRuleDefinition(def, tokens, tracing, evalLines);
+                var groupEvals = new List<GroupEval>();
+                bool overall = EvaluateRuleDefinition(def, tokens, tracing, evalLines, groupEvals);
 
                 // Criteria summary per top-level rule group (Q1, Q2, ...)
                 var criteriaSummary = EvaluateTopLevelGroups(def, tokens, tracing);
@@ -481,7 +482,8 @@ namespace JsonWorkflowEngineRule
                     parametersConsidered: parametersConsidered,
                     isEligible: overall,
                     resultMessage: overall ? "Eligible" : "Not Eligible",
-                    facts: facts
+                    facts: facts,
+                    groupEvals: groupEvals
                 );
 
                 tracing.Trace("Eligibility evaluation completed.");
@@ -1416,8 +1418,9 @@ namespace JsonWorkflowEngineRule
         private static void PopulateRule8Tokens(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId, Dictionary<string, object> tokens)
         {
             tracing.Trace($"PopulateRule8Tokens Method is called");
-            tokens["ncpexists"] = CheckNcpExistsForChild(svc, tracing, caseId);
-            tokens["ncppayschildsupport"] = ValidateChildSupport(svc, tracing, caseId);
+            SetToken(tokens, "ncpexists", CheckNcpExistsForChild(svc, tracing, caseId));
+            SetToken(tokens, "ncppayschildsupport", ValidateChildSupport(svc, tracing, caseId));
+
 
             tokens["otheradultpartnerorspouse"] = GetActiveHouseholdCount(svc, tracing, caseId, CaseRelationShipLookup.SpouseOrPartner).Any();
 
@@ -1989,13 +1992,14 @@ namespace JsonWorkflowEngineRule
         }
 
         private static string BuildResultJson(
-            List<string> validationFailures,
-            List<EvalLine> evaluationLines,
-            List<CriteriaSummaryLine> criteriaSummary,
-            List<string> parametersConsidered,
-            bool isEligible,
-            string resultMessage,
-            Dictionary<string, object> facts = null)
+    List<string> validationFailures,
+    List<EvalLine> evaluationLines,
+    List<CriteriaSummaryLine> criteriaSummary,
+    List<string> parametersConsidered,
+    bool isEligible,
+    string resultMessage,
+    Dictionary<string, object> facts = null,
+    List<GroupEval> groupEvals = null)
         {
             var payload = new
             {
@@ -2003,8 +2007,7 @@ namespace JsonWorkflowEngineRule
                 criteriaSummary = criteriaSummary ?? new List<CriteriaSummaryLine>(),
                 parametersConsidered = parametersConsidered ?? new List<string>(),
                 lines = evaluationLines ?? new List<EvalLine>(),
-
-                // NEW (safe extra fields)
+                groupEvals = groupEvals ?? new List<GroupEval>(),
                 isEligible = isEligible,
                 resultMessage = resultMessage ?? "",
                 facts = facts ?? new Dictionary<string, object>()
@@ -2012,6 +2015,7 @@ namespace JsonWorkflowEngineRule
 
             return JsonConvert.SerializeObject(payload);
         }
+
 
         #endregion
 
@@ -2151,16 +2155,84 @@ namespace JsonWorkflowEngineRule
             }
         }
 
-        private static bool EvaluateRuleDefinition(RuleDefinition def, Dictionary<string, object> tokens, ITracingService tracing, List<EvalLine> lines)
+        private static bool EvaluateRuleDefinition(
+     RuleDefinition def,
+     Dictionary<string, object> tokens,
+     ITracingService tracing,
+     List<EvalLine> lines,
+     List<GroupEval> groupEvals)
         {
             var rootAnd = string.Equals(def.@operator, "AND", StringComparison.OrdinalIgnoreCase);
 
             var results = new List<bool>();
+
             foreach (var g in def.groups ?? new List<RuleGroup>())
-                results.Add(EvaluateGroup(g, tokens, tracing, lines, "ROOT"));
+            {
+                var ge = EvaluateGroupTree(g, tokens, tracing, lines, "ROOT");
+                groupEvals.Add(ge);
+                results.Add(ge.pass);
+            }
 
             return rootAnd ? results.All(x => x) : results.Any(x => x);
         }
+
+        private static GroupEval EvaluateGroupTree(
+    RuleGroup group,
+    Dictionary<string, object> tokens,
+    ITracingService tracing,
+    List<EvalLine> flatLines,
+    string parentPath)
+        {
+            var groupPath = $"{parentPath} > {(string.IsNullOrWhiteSpace(group.label) ? group.id : group.label)}";
+            var isAnd = string.Equals(group.@operator, "AND", StringComparison.OrdinalIgnoreCase);
+
+            var node = new GroupEval
+            {
+                id = group.id,
+                label = string.IsNullOrWhiteSpace(group.label) ? group.id : group.label,
+                path = groupPath,
+                op = group.@operator
+            };
+
+            var localResults = new List<bool>();
+
+            // conditions
+            foreach (var c in group.conditions ?? new List<Condition>())
+            {
+                var pass = EvaluateCondition(c, tokens, tracing, out var actual);
+                localResults.Add(pass);
+
+                var tokenKey = (c.token ?? "").Trim();
+
+                var line = new EvalLine
+                {
+                    path = groupPath,
+                    token = tokenKey,
+                    label = GetTokenLabel(tokenKey),   // ✅ friendly label
+                    op = c.@operator,
+                    expected = c.value,
+                    actual = actual,
+                    pass = pass
+                };
+
+                node.conditions.Add(line);
+                flatLines.Add(line); // keep your old output too (safe)
+            }
+
+            // children
+            foreach (var child in group.groups ?? new List<RuleGroup>())
+            {
+                var childNode = EvaluateGroupTree(child, tokens, tracing, flatLines, groupPath);
+                node.groups.Add(childNode);
+                localResults.Add(childNode.pass);
+            }
+
+            node.pass = isAnd ? localResults.All(x => x) : localResults.Any(x => x);
+
+            tracing.Trace($"GroupTree '{groupPath}' => {node.pass} (op={group.@operator})");
+            return node;
+        }
+
 
         private static bool EvaluateGroup(
     RuleGroup group,
@@ -2176,14 +2248,15 @@ namespace JsonWorkflowEngineRule
 
             foreach (var c in group.conditions ?? new List<Condition>())
             {
-                var pass = EvaluateCondition(c, tokens, out var actual);
+                var pass = EvaluateCondition(c, tokens, tracing, out var actual);
                 localResults.Add(pass);
+                var tokenKey = (c.token ?? "").Trim();
 
                 lines.Add(new EvalLine
                 {
                     path = groupPath,
-                    token = c.token,
-                    label = GetTokenLabel(c.token),   // ✅ key change
+                    token = tokenKey,
+                    label = GetTokenLabel(tokenKey),   // ✅ key change
                     op = c.@operator,
                     expected = c.value,
                     actual = actual,
@@ -2223,10 +2296,13 @@ namespace JsonWorkflowEngineRule
         //}
 
 
-        private static bool EvaluateCondition(Condition c, Dictionary<string, object> tokens, out object actual)
+        private static bool EvaluateCondition(Condition c, Dictionary<string, object> tokens, ITracingService tracing, out object actual)
         {
-            tokens.TryGetValue(c.token ?? "", out actual);
+            var tokenKey = (c.token ?? "").Trim();
+            tokens.TryGetValue(tokenKey, out actual);
             var op = (c.@operator ?? "").Trim().ToLowerInvariant();
+
+            tracing.Trace($"TOKEN LOOKUP: '{tokenKey}' exists={tokens.ContainsKey(tokenKey)} actual={(actual == null ? "<null>" : actual.ToString())}");
 
             switch (op)
             {
@@ -2266,6 +2342,27 @@ namespace JsonWorkflowEngineRule
 
             return string.Equals(actual.ToString(), expected.ToString(), StringComparison.OrdinalIgnoreCase);
         }
+        private class GroupEval
+        {
+            public string id { get; set; }
+            public string label { get; set; }
+            public string path { get; set; }
+            public string op { get; set; }          // AND/OR
+            public bool pass { get; set; }
+
+            public List<EvalLine> conditions { get; set; } = new List<EvalLine>();
+            public List<GroupEval> groups { get; set; } = new List<GroupEval>();
+        }
+
+        private static void SetToken(Dictionary<string, object> tokens, string key, object value)
+        {
+            if (tokens == null) return;
+            var k = (key ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(k)) return;
+
+            tokens[k] = value;
+        }
+
 
         private static bool CompareNumber(object actual, object expected, Func<decimal, decimal, bool> cmp)
         {
