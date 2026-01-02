@@ -53,6 +53,8 @@ namespace JsonWorkflowEngineRule
 
         // BLI fields
         private const string FLD_BLI_RegardingCase = "mcg_regardingincident";
+        private const string FLD_BLI_BenefitUniqId = "mcg_casebenefitplanlineitemid";
+
 
         // Verified? is Choice
         private const string FLD_BLI_Verified = "mcg_verifiedids";
@@ -124,8 +126,8 @@ namespace JsonWorkflowEngineRule
         //EligibiliyAdmin
         private const string FLD_EA_Name = "mcg_name";
 
-        //Case Already receiving State CCS benefits field
-        private const string FLD_Case_StateCCSFlag = "mcg_alreadyreceivingstateccsbenefits";
+        //Case Benefit Line Item Already receiving State CCS benefits field
+        private const string FLD_CaseBenefit_StateCCSFlag = "mcg_alreadyreceivingstateccsbenefits";
 
         //Case Expense Table
         private const string FLD_CE_ExpenseType = "mcg_type";
@@ -187,7 +189,7 @@ namespace JsonWorkflowEngineRule
             ChildSupport = 861450045
         }
 
-        //Enum Case Entity State CCS choice column
+        //Enum Case Benefit Line Item Entity State CCS choice column
         public enum CaseStateCCS
         {
             Yes = 568020000,
@@ -388,7 +390,7 @@ namespace JsonWorkflowEngineRule
                             validationFailures.Add("Most recent income tax return document is missing.");
                     }
                     // Has Already receiving the State CCS check
-                    var stateCcsMessage = HasAlreadyReceivingStateCCS(service, tracing, caseRef.Id);
+                    var stateCcsMessage = HasAlreadyReceivingStateCCS(service, tracing, bliId);
                     if (!string.IsNullOrWhiteSpace(stateCcsMessage))
                     {
                         validationFailures.Add(stateCcsMessage);
@@ -663,37 +665,37 @@ namespace JsonWorkflowEngineRule
             }
         }
 
-        private static string HasAlreadyReceivingStateCCS(IOrganizationService svc, ITracingService tracing, Guid caseId)
+        private static string HasAlreadyReceivingStateCCS(IOrganizationService svc, ITracingService tracing, Guid bliId)
         {
-            var qe = new QueryExpression(ENT_Case)
+            var qe = new QueryExpression(ENT_BenefitLineItem)
             {
-                ColumnSet = new ColumnSet(FLD_Case_StateCCSFlag, "statecode"),
+                ColumnSet = new ColumnSet(FLD_CaseBenefit_StateCCSFlag, "statecode"),
                 TopCount = 1
             };
 
-            qe.Criteria.AddCondition(FLD_CASE_IncidentId, ConditionOperator.Equal, caseId);
+            qe.Criteria.AddCondition(FLD_BLI_BenefitUniqId, ConditionOperator.Equal, bliId);
             qe.Criteria.AddCondition("statecode", ConditionOperator.Equal, 0);
 
             var entity = svc.RetrieveMultiple(qe).Entities.FirstOrDefault();
 
             if (entity == null)
             {
-                tracing.Trace("Case not found");
+                tracing.Trace("Case benefit line item not found");
                 return string.Empty;
             }
 
-            if (!entity.Attributes.Contains(FLD_Case_StateCCSFlag))
+            if (!entity.Attributes.Contains(FLD_CaseBenefit_StateCCSFlag))
             {
                 tracing.Trace("CaseStateCCS is NULL");
-                return "Please fill Already receiving State CCS benefits question in case form";
+                return "Please fill in if the beneficiary is already receiving the STATE CCS benefit";
             }
 
-            var stateCcs = entity.GetAttributeValue<OptionSetValue>(FLD_Case_StateCCSFlag)?.Value;
+            var stateCcs = entity.GetAttributeValue<OptionSetValue>(FLD_CaseBenefit_StateCCSFlag)?.Value;
 
             if (stateCcs == (int)CaseStateCCS.Yes)
             {
                 tracing.Trace("CaseStateCCS = Yes");
-                return "You are already receiving the benefit from the State CCS";
+                return "You are already receiving the benefit from the STATE CCS";
             }
 
             tracing.Trace("CaseStateCCS is present but not Yes");
@@ -1270,26 +1272,9 @@ namespace JsonWorkflowEngineRule
             tracing.Trace($"CountHouseHoldSize Method is called");
 
             var houseHoldSize = GetActiveHouseholdCount(svc, tracing, caseId);
-
-            var filteredHousehold = houseHoldSize
-                    .Where(e =>
-                        e.Contains(FLD_CH_DateEntered) &&
-                        (
-                            !e.Contains(FLD_CH_DateExited)
-                            || (
-                                e.GetAttributeValue<DateTime>(FLD_CH_DateEntered).Day !=
-                                e.GetAttributeValue<DateTime>(FLD_CH_DateExited).Day
-                                ||
-                                e.GetAttributeValue<DateTime>(FLD_CH_DateEntered).Month !=
-                                e.GetAttributeValue<DateTime>(FLD_CH_DateExited).Month
-                            )
-                        )
-                    )
-                    .ToList();
-
-            tracing.Trace($"CountHouseHoldSize is: {filteredHousehold.Count} ");
+            tracing.Trace($"CountHouseHoldSize is: {houseHoldSize.Count} ");
             tracing.Trace($"CountHouseHoldSize Method is end");
-            return filteredHousehold.Count;
+            return houseHoldSize.Count;
         }
 
         private static bool HasCheckEligibleIncomeRange(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId)
@@ -1431,14 +1416,11 @@ namespace JsonWorkflowEngineRule
         private static void PopulateRule8Tokens(IPluginExecutionContext context, IOrganizationService svc, ITracingService tracing, Guid caseId, Dictionary<string, object> tokens)
         {
             tracing.Trace($"PopulateRule8Tokens Method is called");
-            //tokens["pursuingchildsupportorgoodcause"] = ValidateChildSupport(svc, tracing, caseId);
             tokens["ncpexists"] = CheckNcpExistsForChild(svc, tracing, caseId);
             tokens["ncppayschildsupport"] = ValidateChildSupport(svc, tracing, caseId);
 
-            tokens["ncpexists"] = CheckNcpExistsForChild(svc, tracing, caseId);
             tokens["otheradultpartnerorspouse"] = GetActiveHouseholdCount(svc, tracing, caseId, CaseRelationShipLookup.SpouseOrPartner).Any();
 
-            tokens["ncpexists"] = CheckNcpExistsForChild(svc, tracing, caseId);
             tokens["issingleparent"] = CheckMaritalStatusAllowedFromCaseContact(
               svc,
               tracing,
@@ -1465,7 +1447,7 @@ namespace JsonWorkflowEngineRule
             var caseInvolvedPartRecord = CheckCaseInvolvedParties(svc, tracing, caseId, caseRelationship.ToArray());
             bool isInvolvedPartiesPresent = caseInvolvedPartRecord.Any();
 
-            var houseHoldNcpRecord = GetHouseHoldNcpMembers(svc, tracing, caseId, CaseRelationShipLookup.SpouseOrPartner);
+            var houseHoldNcpRecord = GetHouseHoldNcpMembers(svc, tracing, caseId);
             bool isCaseHouseHoldNcpPresent = houseHoldNcpRecord.Any();
 
             tracing.Trace($"caseInvolvedPartCheck {isInvolvedPartiesPresent}");
@@ -1668,7 +1650,7 @@ namespace JsonWorkflowEngineRule
                 );
             }
 
-            var results = svc.RetrieveMultiple(qe).Entities;
+            var results = svc.RetrieveMultiple(qe).Entities.ToList();
 
             var matchedRecords = results
                 .Where(e =>
@@ -1681,9 +1663,10 @@ namespace JsonWorkflowEngineRule
                 )
                 .ToList();
 
+            tracing.Trace($"GetHouseHoldNcpMembers matchedRecords: {matchedRecords.Any()}");
             tracing.Trace($"GetHouseHoldNcpMembers count: {results.Count}");
             tracing.Trace($"GetHouseHoldNcpMembers Method is end");
-            return matchedRecords;
+            return results;
         }
         #endregion
 
@@ -2094,7 +2077,7 @@ namespace JsonWorkflowEngineRule
                 case "mostrecenttaxreturnprovided": return "Most recent income tax return provided";
                 case "pursuingchildsupportorgoodcause": return "Pursuing child support or good cause documented";
                 case "childsupportdocumentprovided": return "Child support document provided";
-                case "singleparentfamily": return "Single-parent family";
+                case "singleparentfamily": return "Is family a sSingle-parent family";
                 case "absentparent": return "Absent parent";
                 case "medicalbillsamount": return "Medical bills amount";
                 case "yearlyincome": return "Yearly eligible income";
